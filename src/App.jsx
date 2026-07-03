@@ -1233,11 +1233,11 @@ Do not pad. Do not re-explain the original reasoning unless it's directly releva
       <div className="de-card-header">
         <div>
           <div className="de-matchup-teams" style={{ marginBottom: 4, display:"flex", alignItems:"center", gap:8 }}>
-            <TeamLogo abbr={matchup.awayTeam} size={26} />
+            <TeamLogo abbr={matchup.awayTeam} size={40} />
             <span className="de-team-abbr" style={{ color: T.blue }}>{matchup.awayTeam}</span>
             <span className="de-vs">@</span>
             <span className="de-team-abbr" style={{ color: T.green }}>{matchup.homeTeam}</span>
-            <TeamLogo abbr={matchup.homeTeam} size={26} />
+            <TeamLogo abbr={matchup.homeTeam} size={40} />
           </div>
           <div className="de-meta">
             {fmtDate(matchup.date)}{matchup.gameTime ? ` · ${matchup.gameTime}` : ""}
@@ -1815,6 +1815,18 @@ function TabMatchups({ matchups, onAdd, onLog, onDelete, onUpdate }) {
             {slateLoading ? "Loading..." : "⚡ Load Slate"}
           </button>
           <button className="de-btn-ghost" onClick={() => setShowModal(true)}>+ Manual</button>
+          <button className="de-btn-ghost" style={{ borderColor:T.red, color:T.red, fontSize:11 }}
+            onClick={() => {
+              const today = mlbApi.todayET();
+              const old = matchups.filter(m => m.date !== today);
+              if (old.length === 0) { setSlateMsg("No old games to clear."); return; }
+              if (window.confirm(`Delete ${old.length} game(s) from previous days?`)) {
+                old.forEach(m => onDelete(m.id));
+                setSlateMsg(`✓ Cleared ${old.length} old game(s)`);
+              }
+            }}>
+            🗑 Clear Old
+          </button>
         </div>
       </div>
       {slateMsg && (

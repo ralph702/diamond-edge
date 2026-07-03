@@ -384,6 +384,12 @@ const TeamLogo = ({ abbr, size = 32 }) => {
   if (!id) return React.createElement('div', {style:{width:size,height:size,borderRadius:'50%',background:'#2a3349',display:'flex',alignItems:'center',justifyContent:'center',fontSize:size*0.35,fontWeight:700,color:'#9aa5be'}}, abbr&&abbr.slice(0,2));
   return React.createElement('img', {src:'https://www.mlb.com/assets/images/teams/logos/MLB_'+id+'_logo.svg',alt:abbr,width:size,height:size,style:{objectFit:'contain'},onError:e=>{e.target.style.display='none'}});
 };
+// Last name only — "Dylan Cease" -> "Cease". Handles TBD/null safely.
+const lastName = (fullName) => {
+  if (!fullName || fullName === "TBD") return fullName || "?";
+  const parts = fullName.trim().split(" ");
+  return parts[parts.length - 1];
+};
 
 // ─── CONSTANTS ────────────────────────────────────────────────────────────────
 const FACTORS = [
@@ -1226,14 +1232,16 @@ Do not pad. Do not re-explain the original reasoning unless it's directly releva
 
       <div className="de-card-header">
         <div>
-          <div className="de-matchup-teams" style={{ marginBottom: 4 }}>
+          <div className="de-matchup-teams" style={{ marginBottom: 4, display:"flex", alignItems:"center", gap:8 }}>
+            <TeamLogo abbr={matchup.awayTeam} size={26} />
             <span className="de-team-abbr" style={{ color: T.blue }}>{matchup.awayTeam}</span>
             <span className="de-vs">@</span>
             <span className="de-team-abbr" style={{ color: T.green }}>{matchup.homeTeam}</span>
+            <TeamLogo abbr={matchup.homeTeam} size={26} />
           </div>
           <div className="de-meta">
             {fmtDate(matchup.date)}{matchup.gameTime ? ` · ${matchup.gameTime}` : ""}
-            {matchup.awayPitcher ? ` · ${matchup.awayPitcher.split(" ")[0]} vs ${matchup.homePitcher?.split(" ")[0] || "?"}` : ""}
+            {matchup.awayPitcher ? ` · ${lastName(matchup.awayPitcher)} vs ${matchup.homePitcher ? lastName(matchup.homePitcher) : "?"}` : ""}
           </div>
         </div>
         <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 6 }}>
@@ -1248,6 +1256,22 @@ Do not pad. Do not re-explain the original reasoning unless it's directly releva
           </div>
         </div>
       </div>
+
+      {/* Plain-English pick banner — Ralph asked "I don't know what you're picking" */}
+      {matchup.overallLean && matchup.overallLean !== "Push/Skip" && filledFactors.length > 0 ? (
+        <div style={{ display:"flex", alignItems:"center", gap:8, background:tierStyle.bg,
+          border:`1px solid ${tierStyle.color}40`, borderRadius:8, padding:"8px 12px", margin:"10px 0" }}>
+          <span style={{ fontSize:14 }}>🎯</span>
+          <span style={{ fontFamily:T.mono, fontSize:13, fontWeight:700, color:tierStyle.color }}>
+            PICK: {matchup.overallLean === "Home" ? matchup.homeTeam : matchup.overallLean === "Away" ? matchup.awayTeam : matchup.overallLean}
+          </span>
+          <span style={{ fontSize:11, color:T.text2, fontFamily:T.mono }}>· {tierStyle.label}</span>
+        </div>
+      ) : (
+        <div style={{ fontSize:11, color:T.text2, fontFamily:T.mono, margin:"10px 0" }}>
+          No pick yet — fill in factors below
+        </div>
+      )}
 
       {/* Amendment panel */}
       {amendment && (
@@ -1872,10 +1896,12 @@ function TabTop10({ matchups }) {
             <div style={{ display: "flex", gap: 14, alignItems: "center" }}>
               <div className="de-rank">#{i + 1}</div>
               <div style={{ flex: 1 }}>
-                <div className="de-matchup-teams" style={{ marginBottom: 4 }}>
+                <div className="de-matchup-teams" style={{ marginBottom: 4, display:"flex", alignItems:"center", gap:6 }}>
+                  <TeamLogo abbr={m.awayTeam} size={22} />
                   <span className="de-team-abbr" style={{ color: T.blue }}>{m.awayTeam}</span>
                   <span className="de-vs">@</span>
                   <span className="de-team-abbr" style={{ color: T.green }}>{m.homeTeam}</span>
+                  <TeamLogo abbr={m.homeTeam} size={22} />
                   <span style={{ marginLeft: 8 }}><span className={`de-badge ${scoreToClass(score)}`}>{scoreLabel(score)} {score}</span></span>
                 </div>
                 <div className="de-meta">{fmtDate(m.date)} · {aligned}/{FACTORS.length} factors → {m.overallLean}</div>

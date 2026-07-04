@@ -598,6 +598,47 @@ const dotClass = (dir, homeTeam) => {
   if (dir === "Home" || dir === `${homeTeam}`) return "dot-home";
   return "dot-away";
 };
+
+// ─── "WHAT WE LIKE" — auto-generated plain-English summary, no manual factors needed.
+// Built from data already computed by Scan All Games (proj/quickEdge) plus temp and
+// park factor. This is the thing that actually answers "what should I pick" — short,
+// green, obvious, no digging through tables required.
+function getWhatWeLike(matchup) {
+  const bullets = [];
+  const proj = matchup._proj;
+  const edge = matchup._quickEdge;
+
+  if (edge != null && Math.abs(edge) >= 0.8) {
+    const dir = edge > 0 ? "Over" : "Under";
+    const strength = Math.abs(edge) >= 1.3 ? "strong" : "solid";
+    bullets.push({
+      text: `${strength === "strong" ? "Strong" : "Solid"} total edge — projecting ${proj.projTotal} vs market ${matchup.marketTotal}. Lean ${dir} (${edge > 0 ? "+" : ""}${edge} runs).`,
+      strength,
+    });
+  }
+
+  if (proj) {
+    const tempF = parseFloat(matchup.tempF);
+    if (tempF >= 90) bullets.push({ text: `Hot — ${tempF}°F pushes the ball, favors offense.`, strength: "note" });
+    if (tempF && tempF <= 65) bullets.push({ text: `Cool — ${tempF}°F suppresses scoring, favors pitching.`, strength: "note" });
+
+    const pf = proj.parkFactor;
+    if (pf >= 1.08) bullets.push({ text: `Hitter's park (${pf}× run environment) — bump toward Over.`, strength: "note" });
+    if (pf <= 0.93) bullets.push({ text: `Pitcher's park (${pf}× run environment) — bump toward Under.`, strength: "note" });
+
+    if (proj.awayERA && proj.homeERA) {
+      const gap = Math.abs(proj.awayERA - proj.homeERA);
+      if (gap >= 1.5) {
+        const better = proj.awayERA < proj.homeERA ? matchup.awayTeam : matchup.homeTeam;
+        const worse = proj.awayERA < proj.homeERA ? matchup.homeTeam : matchup.awayTeam;
+        bullets.push({ text: `Pitching mismatch — ${better}'s starter (${Math.min(proj.awayERA,proj.homeERA)} ERA) clearly outclasses ${worse}'s (${Math.max(proj.awayERA,proj.homeERA)} ERA). Check that team's total/props.`, strength: "note" });
+      }
+    }
+  }
+
+  return bullets;
+}
+
 // Parse "YYYY-MM-DD" as LOCAL date, not UTC — new Date("2026-07-03") is UTC midnight
 // which displays as Jul 2 in US timezones. This was mislabeling every card.
 const fmtDate = (d) => {
@@ -1041,6 +1082,13 @@ function MatchupCard({ matchup, onLog, onDelete, onUpdate }) {
     try {
       const result = await mlbProjection.project(matchup);
       setProj(result);
+      // Also persist to the matchup so "What We Like" and the slate-level edge
+      // sort/badge work without requiring the separate Scan All Games pass.
+      if (result) {
+        const mkt = parseFloat(matchup.marketTotal);
+        const quickEdge = !isNaN(mkt) ? parseFloat((result.projTotal - mkt).toFixed(1)) : null;
+        onUpdate({ ...matchup, _proj: result, _quickEdge: quickEdge });
+      }
     } catch(e) { console.error("projection failed", e); }
     finally { setProjLoading(false); }
   };
@@ -1400,6 +1448,25 @@ Do not pad. Do not re-explain the original reasoning unless it's directly releva
               </div>
             </>
           )}
+
+          {/* ── WHAT WE LIKE — plain-English, auto-generated, no manual factors needed ── */}
+          {(() => {
+            const likes = getWhatWeLike(matchup);
+            if (likes.length === 0) return null;
+            return (
+              <div style={{ marginTop:14, background:`${T.green}0d`, border:`1px solid ${T.green}40`, borderRadius:9, padding:"12px 14px" }}>
+                <div style={{ fontSize:11, color:T.green, fontFamily:T.mono, fontWeight:700, marginBottom:8, textTransform:"uppercase", letterSpacing:"0.5px" }}>
+                  ✓ What We Like
+                </div>
+                {likes.map((b, i) => (
+                  <div key={i} style={{ display:"flex", gap:8, marginBottom: i === likes.length-1 ? 0 : 6 }}>
+                    <span style={{ color:T.green, fontWeight:700 }}>•</span>
+                    <span style={{ fontSize:13, color:T.text0, lineHeight:1.5, fontWeight: b.strength === "strong" ? 700 : 400 }}>{b.text}</span>
+                  </div>
+                ))}
+              </div>
+            );
+          })()}
 
           {/* ── FAIR LINE ENGINE (Step 5) ── */}
           <div style={{ marginTop:14 }}>

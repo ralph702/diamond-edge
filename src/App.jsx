@@ -1883,7 +1883,7 @@ function TabMatchups({ matchups, onAdd, onLog, onDelete, onUpdate }) {
 
   return (
     <div className="de-body">
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 18, flexWrap: "wrap", gap: 10 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8, flexWrap: "wrap", gap: 10 }}>
         <div>
           <div style={{ fontSize: 18, fontWeight: 700, color: T.text0 }}>Today's Slate</div>
           <div style={{ fontSize: 12, color: T.text2, marginTop: 2 }}>{new Date().toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric" })}</div>
@@ -1910,6 +1910,11 @@ function TabMatchups({ matchups, onAdd, onLog, onDelete, onUpdate }) {
       </div>
       {slateMsg && (
         <div style={{ fontSize: 12, fontFamily: T.mono, color: slateMsg.startsWith("⚠") ? T.red : T.green, marginBottom: 12 }}>{slateMsg}</div>
+      )}
+      {todayGames.length > 0 && (
+        <div style={{ fontSize:11, color:T.text2, fontFamily:T.mono, marginBottom:16, padding:"8px 12px", background:T.bg2, borderRadius:7, borderLeft:`3px solid ${T.blue}` }}>
+          ✓ Analyze any game right now — fair line, factor stack, and 5 Looks all work immediately. Only the final <strong style={{color:T.text1}}>🔒 Lock</strong> button waits on lineups (usually posted ~2-3 hrs before first pitch).
+        </div>
       )}
 
       {todayGames.length === 0 && (

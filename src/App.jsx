@@ -1804,11 +1804,38 @@ function TabMatchups({ matchups, onAdd, onLog, onDelete, onUpdate }) {
     setSlateMsg(null);
     try {
       const games = await mlbApi.schedule(today);
+      // Pull live market odds + temp from Yahoo in parallel (server-side, zero manual entry)
+      let yahooGames = [];
+      try {
+        const yr = await fetch("/api/yahoo-odds");
+        const yj = await yr.json();
+        yahooGames = yj.games || [];
+      } catch { /* Yahoo optional — MLB data still loads without it */ }
+      const yahooByPair = Object.fromEntries(yahooGames.map(g => [`${g.awayTeam}@${g.homeTeam}`, g]));
+
       const existing = new Set(matchups.map(m => m.gamePk).filter(Boolean));
-      let added = 0;
+      let added = 0, withOdds = 0;
       for (const g of games) {
         if (existing.has(g.gamePk)) continue;
         const gameTime = new Date(g.gameTimeUTC).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", timeZone: "America/New_York" }) + " ET";
+        const y = yahooByPair[`${g.away.abbr}@${g.home.abbr}`];
+        let marketTotal = "", marketHomeML = "", marketAwayML = "", tempF = "";
+        if (y) {
+          marketTotal = String(y.total);
+          tempF = String(y.tempF);
+          const favML = parseInt(y.favoriteML, 10);
+          // Yahoo only lists the favorite's price — derive the dog price from it
+          const impliedFavPct = favML < 0 ? (-favML) / (-favML + 100) : 100 / (favML + 100);
+          const dogAmerican = impliedFavPct >= 0.5
+            ? Math.round((impliedFavPct / (1 - impliedFavPct)) * -100 * -1) // placeholder, replaced below
+            : null;
+          // Simple vig-aware dog price: invert implied prob, convert back to American
+          const dogPct = 1 - impliedFavPct;
+          const dogML = dogPct > 0 ? (dogPct >= 0.5 ? Math.round(-(dogPct/(1-dogPct))*100) : Math.round(((1-dogPct)/dogPct)*100)) : "";
+          if (y.favorite === g.home.abbr) { marketHomeML = String(favML); marketAwayML = String(dogML); }
+          else { marketAwayML = String(favML); marketHomeML = String(dogML); }
+          withOdds++;
+        }
         onAdd({
           id: genId(), gamePk: g.gamePk, date: today,
           homeTeam: g.home.abbr, awayTeam: g.away.abbr,
@@ -1816,13 +1843,16 @@ function TabMatchups({ matchups, onAdd, onLog, onDelete, onUpdate }) {
           homePitcher: g.home.probable || "TBD", awayPitcher: g.away.probable || "TBD",
           listedHomeProbable: g.home.probable, listedAwayProbable: g.away.probable,
           gameTime, overallLean: "Push/Skip",
+          marketTotal, marketHomeML, marketAwayML, tempF,
           factors: Object.fromEntries(FACTORS.map(f => [f.id, { direction: "Push/Skip", value: "", note: "" }])),
           looks: MARKETS.map(market => ({ market, lean: "", line: "", why: "" })),
           notes: "", autoLoaded: true,
         });
         added++;
       }
-      setSlateMsg(added > 0 ? `✓ Loaded ${added} game${added !== 1 ? "s" : ""} from MLB Stats API` : "Slate already loaded — no new games");
+      setSlateMsg(added > 0
+        ? `✓ Loaded ${added} game${added !== 1 ? "s" : ""} · ${withOdds} with live odds from Yahoo — zero manual entry`
+        : "Slate already loaded — no new games");
     } catch (e) {
       setSlateMsg("⚠ Slate load failed: " + e.message);
     } finally {

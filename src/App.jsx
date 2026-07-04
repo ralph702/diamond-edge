@@ -1862,6 +1862,7 @@ function TabMatchups({ matchups, onAdd, onLog, onDelete, onUpdate }) {
           homeTeam: g.home.abbr, awayTeam: g.away.abbr,
           homeTeamId: g.home.id, awayTeamId: g.away.id,
           homePitcher: g.home.probable || "TBD", awayPitcher: g.away.probable || "TBD",
+          homeProbableId: g.home.probableId || null, awayProbableId: g.away.probableId || null,
           listedHomeProbable: g.home.probable, listedAwayProbable: g.away.probable,
           gameTime, overallLean: "Push/Skip",
           marketTotal, marketHomeML, marketAwayML, tempF,
@@ -1880,6 +1881,40 @@ function TabMatchups({ matchups, onAdd, onLog, onDelete, onUpdate }) {
       setSlateLoading(false);
     }
   };
+
+  // Auto-scan: compute the fair-line edge for EVERY game on the slate at once,
+  // no expanding cards required. This is what actually answers "which games do I like" —
+  // ranks by |projected total - market total| so the biggest gaps float to the top.
+  const [scanning, setScanning] = useState(false);
+  const [scanMsg, setScanMsg] = useState(null);
+  const runFullScan = async () => {
+    setScanning(true);
+    setScanMsg(null);
+    try {
+      let scored = 0;
+      for (const m of todayGames) {
+        if (!m.awayTeamId || !m.homeTeamId) continue;
+        try {
+          const proj = await mlbProjection.project(m);
+          if (!proj) continue;
+          const mkt = parseFloat(m.marketTotal);
+          const quickEdge = !isNaN(mkt) ? parseFloat((proj.projTotal - mkt).toFixed(1)) : null;
+          onUpdate({ ...m, _proj: proj, _quickEdge: quickEdge });
+          scored++;
+        } catch { /* skip this game, keep going */ }
+      }
+      setScanMsg(scored > 0 ? `✓ Scanned ${scored} game${scored !== 1 ? "s" : ""} — sorted by edge size below` : "Nothing to scan yet — Load Slate first");
+    } finally {
+      setScanning(false);
+    }
+  };
+
+  // Sort: biggest |edge| first (scanned games), then unscanned games after
+  const sortedTodayGames = [...todayGames].sort((a, b) => {
+    const ae = a._quickEdge != null ? Math.abs(a._quickEdge) : -1;
+    const be = b._quickEdge != null ? Math.abs(b._quickEdge) : -1;
+    return be - ae;
+  });
 
   return (
     <div className="de-body">
@@ -1912,9 +1947,18 @@ function TabMatchups({ matchups, onAdd, onLog, onDelete, onUpdate }) {
         <div style={{ fontSize: 12, fontFamily: T.mono, color: slateMsg.startsWith("⚠") ? T.red : T.green, marginBottom: 12 }}>{slateMsg}</div>
       )}
       {todayGames.length > 0 && (
-        <div style={{ fontSize:11, color:T.text2, fontFamily:T.mono, marginBottom:16, padding:"8px 12px", background:T.bg2, borderRadius:7, borderLeft:`3px solid ${T.blue}` }}>
-          ✓ Analyze any game right now — fair line, factor stack, and 5 Looks all work immediately. Only the final <strong style={{color:T.text1}}>🔒 Lock</strong> button waits on lineups (usually posted ~2-3 hrs before first pitch).
+        <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", gap:10, flexWrap:"wrap", marginBottom:16, padding:"8px 12px", background:T.bg2, borderRadius:7, borderLeft:`3px solid ${T.blue}` }}>
+          <div style={{ fontSize:11, color:T.text2, fontFamily:T.mono }}>
+            ✓ Analyze any game right now — fair line, factor stack, and 5 Looks all work immediately. Only the final <strong style={{color:T.text1}}>🔒 Lock</strong> button waits on lineups (usually posted ~2-3 hrs before first pitch).
+          </div>
+          <button className="de-btn" style={{ fontSize:11, padding:"6px 12px", whiteSpace:"nowrap", background: scanning ? T.bg3 : T.amber, color: scanning ? T.text2 : "#0f1117" }}
+            onClick={runFullScan} disabled={scanning}>
+            {scanning ? `Scanning...` : "🔍 Scan All Games for Edge"}
+          </button>
         </div>
+      )}
+      {scanMsg && (
+        <div style={{ fontSize:12, fontFamily:T.mono, color:T.green, marginBottom:16 }}>{scanMsg}</div>
       )}
 
       {todayGames.length === 0 && (
@@ -1925,11 +1969,18 @@ function TabMatchups({ matchups, onAdd, onLog, onDelete, onUpdate }) {
         </div>
       )}
 
-      {todayGames.map(m => (
-        <MatchupCard key={m.id} matchup={m}
-          onLog={mm => setLogTarget(mm)}
-          onDelete={id => onDelete(id)}
-          onUpdate={onUpdate} />
+      {sortedTodayGames.map(m => (
+        <div key={m.id}>
+          {m._quickEdge != null && Math.abs(m._quickEdge) >= 0.8 && (
+            <div style={{ fontSize:11, fontFamily:T.mono, fontWeight:700, color: Math.abs(m._quickEdge) >= 1.3 ? T.amber : T.text1, marginBottom:4, paddingLeft:4 }}>
+              ⚡ {Math.abs(m._quickEdge) >= 1.3 ? "STRONG EDGE" : "Edge"}: proj {m._proj?.projTotal} vs market {m.marketTotal} ({m._quickEdge > 0 ? "Over" : "Under"} lean, {m._quickEdge > 0 ? "+" : ""}{m._quickEdge})
+            </div>
+          )}
+          <MatchupCard matchup={m}
+            onLog={mm => setLogTarget(mm)}
+            onDelete={id => onDelete(id)}
+            onUpdate={onUpdate} />
+        </div>
       ))}
 
       {otherGames.length > 0 && (

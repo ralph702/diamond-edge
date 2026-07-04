@@ -47,45 +47,43 @@ module.exports = async (req, res) => {
       return;
     }
 
-    // Split into per-game chunks using "View game" as a rough delimiter anchor,
-    // then look backwards/forwards for the surrounding team/odds/temp info.
+    // Split into per-game chunks. Real structure confirmed via debug endpoint:
+    // "Tigers DET 38-50 Rangers TEX 45-43 View game DET -123, O/U 8.5 DSN
+    //  Globe Life Field 95 °F ... Starting Pitchers J. Flaherty 1-8 1 W 8 L
+    //  4.97 ERA C. Quantrill 3-0 3 W 0 L 3.31 ERA"
     const games = [];
-    // Team abbrs used to detect boundaries, e.g. "PiratesPIT" glued together
-    const abbrPattern = Object.entries(TEAM_NAME_TO_ABBR)
-      .map(([name, abbr]) => `${name}${abbr}`)
+    const abbrList = Object.values(TEAM_NAME_TO_ABBR);
+    const nameGroup = Object.keys(TEAM_NAME_TO_ABBR)
+      .sort((a, b) => b.length - a.length) // longest first so "Red Sox" beats "Sox" etc
       .join("|");
-    const chunkRe = new RegExp(
-      `(${abbrPattern})[^A-Za-z]*?(\\d+-\\d+)[\\s\\S]{0,40}?(${abbrPattern})[^A-Za-z]*?(\\d+-\\d+)[\\s\\S]{0,600}?(\\d+)\\s*°\\s*F[\\s\\S]{0,200}?([A-Z]{2,4})\\s*(-\\d{2,4}|\\+\\d{2,4})\\s*[·,]?\\s*O\\/U\\s*(\\d+(?:\\.\\d+)?)`,
+
+    const gameRe = new RegExp(
+      `(${nameGroup})\\s+(${abbrList.join("|")})\\s+(\\d+-\\d+)\\s+` + // away team + abbr + record
+      `(${nameGroup})\\s+(${abbrList.join("|")})\\s+(\\d+-\\d+)\\s+` + // home team + abbr + record
+      `View game\\s+([A-Z]{2,4})\\s*(-\\d{2,5}|\\+\\d{2,5}),?\\s*O\\/U\\s*(\\d+(?:\\.\\d+)?)` + // fav ML + total
+      `[\\s\\S]{0,120}?(\\d{2,3})\\s*°\\s*F`, // temp (search up to 120 chars ahead for it)
       "g"
     );
 
-    let m;
     const seen = new Set();
-    while ((m = chunkRe.exec(text)) !== null) {
-      const awayFull = m[1], homeFull = m[3];
-      const awayName = Object.keys(TEAM_NAME_TO_ABBR).find(n => awayFull.startsWith(n));
-      const homeName = Object.keys(TEAM_NAME_TO_ABBR).find(n => homeFull.startsWith(n));
-      if (!awayName || !homeName) continue;
-      const awayAbbr = normalizeAbbr(TEAM_NAME_TO_ABBR[awayName]);
-      const homeAbbr = normalizeAbbr(TEAM_NAME_TO_ABBR[homeName]);
+    let m;
+    while ((m = gameRe.exec(text)) !== null) {
+      const awayAbbr = normalizeAbbr(m[2]);
+      const homeAbbr = normalizeAbbr(m[5]);
       const key = `${awayAbbr}@${homeAbbr}`;
-      if (seen.has(key)) continue;
+      if (seen.has(key)) continue; // Yahoo repeats live games twice in the feed
       seen.add(key);
-
-      const favAbbr = normalizeAbbr(m[6]);
-      const favML = m[7];
-      const total = parseFloat(m[8]);
-      const tempF = parseInt(m[5], 10);
 
       games.push({
         awayTeam: awayAbbr,
         homeTeam: homeAbbr,
-        favorite: favAbbr,
-        favoriteML: favML,
-        total,
-        tempF,
+        favorite: normalizeAbbr(m[7]),
+        favoriteML: m[8],
+        total: parseFloat(m[9]),
+        tempF: parseInt(m[10], 10),
       });
     }
+
 
     res.status(200).json({ games, count: games.length, source: "yahoo", fetchedAt: new Date().toISOString() });
   } catch (e) {

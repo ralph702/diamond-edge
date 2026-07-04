@@ -1431,7 +1431,25 @@ Do not pad. Do not re-explain the original reasoning unless it's directly releva
 
                 {/* Enter market line for edge calc */}
                 <div style={{ background:T.bg2, borderRadius:8, padding:"10px 12px", marginBottom:10 }}>
-                  <div style={{ fontSize:10, color:T.text2, textTransform:"uppercase", letterSpacing:"0.5px", marginBottom:6 }}>Enter Market Lines to See Edge</div>
+                  <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:6, flexWrap:"wrap", gap:6 }}>
+                    <div style={{ fontSize:10, color:T.text2, textTransform:"uppercase", letterSpacing:"0.5px" }}>Enter Market Lines to See Edge</div>
+                    <button className="de-btn-ghost" style={{ fontSize:10, padding:"3px 8px" }}
+                      onClick={() => onUpdate({ ...matchup, showOdds: !matchup.showOdds })}>
+                      {matchup.showOdds ? "▲ Hide books" : "📊 Compare 75 books"}
+                    </button>
+                  </div>
+                  {matchup.showOdds && (
+                    <div style={{ marginBottom:10, borderRadius:6, overflow:"hidden", background:"#0f1117" }}>
+                      <iframe
+                        src={`https://oddsguard.com/embed/widget?theme=dark&size=full&sport=baseball&league=baseball_mlb&oddsFormat=American`}
+                        title={`${matchup.awayTeam}@${matchup.homeTeam} odds`}
+                        style={{ width:"100%", height:"60vh", minHeight:480, border:"none", display:"block" }}
+                      />
+                      <div style={{ fontSize:9, color:T.text2, fontFamily:T.mono, padding:"6px 10px", background:T.bg3 }}>
+                        Scroll inside the widget to find <strong style={{ color:T.text0 }}>{matchup.awayTeam} @ {matchup.homeTeam}</strong>. Compare Pinnacle vs public books for lazy-line gaps. Powered by OddsGuard.
+                      </div>
+                    </div>
+                  )}
                   <div style={{ display:"flex", gap:8, flexWrap:"wrap" }}>
                     {[["marketTotal","Market O/U","e.g. 8.5"],["marketHomeML","Home ML","e.g. -137"],["marketAwayML","Away ML","e.g. +115"]].map(([key,label,ph]) => (
                       <div key={key} style={{ flex:1, minWidth:90 }}>

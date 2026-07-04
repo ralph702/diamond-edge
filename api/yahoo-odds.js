@@ -42,6 +42,11 @@ module.exports = async (req, res) => {
       .replace(/&#x27;/g, "'")
       .replace(/\s+/g, " ");
 
+    if (req.query && req.query.debug === "1") {
+      res.status(200).json({ textLength: text.length, sample: text.slice(0, 8000) });
+      return;
+    }
+
     // Split into per-game chunks using "View game" as a rough delimiter anchor,
     // then look backwards/forwards for the surrounding team/odds/temp info.
     const games = [];

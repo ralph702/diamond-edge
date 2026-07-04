@@ -1267,21 +1267,42 @@ Do not pad. Do not re-explain the original reasoning unless it's directly releva
         </div>
       </div>
 
-      {/* Plain-English pick banner — Ralph asked "I don't know what you're picking" */}
-      {matchup.overallLean && matchup.overallLean !== "Push/Skip" && filledFactors.length > 0 ? (
-        <div style={{ display:"flex", alignItems:"center", gap:8, background:tierStyle.bg,
-          border:`1px solid ${tierStyle.color}40`, borderRadius:8, padding:"8px 12px", margin:"10px 0" }}>
-          <span style={{ fontSize:14 }}>🎯</span>
-          <span style={{ fontFamily:T.mono, fontSize:13, fontWeight:700, color:tierStyle.color }}>
-            PICK: {matchup.overallLean === "Home" ? matchup.homeTeam : matchup.overallLean === "Away" ? matchup.awayTeam : matchup.overallLean}
-          </span>
-          <span style={{ fontSize:11, color:T.text2, fontFamily:T.mono }}>· {tierStyle.label}</span>
-        </div>
-      ) : (
-        <div style={{ fontSize:11, color:T.text2, fontFamily:T.mono, margin:"10px 0" }}>
-          No pick yet — fill in factors below
-        </div>
-      )}
+      {/* Plain-English pick banner — checks BOTH the factor-stack lean AND the
+          5 Looks market picks, since locking a game only requires the latter. */}
+      {(() => {
+        const looksPicked = (matchup.lockedLooks || matchup.looks || []).filter(l => l.lean);
+        const hasFactorLean = matchup.overallLean && matchup.overallLean !== "Push/Skip" && filledFactors.length > 0;
+        if (looksPicked.length > 0) {
+          return (
+            <div style={{ display:"flex", alignItems:"center", gap:8, flexWrap:"wrap", background:tierStyle.bg,
+              border:`1px solid ${tierStyle.color}40`, borderRadius:8, padding:"8px 12px", margin:"10px 0" }}>
+              <span style={{ fontSize:14 }}>{isLocked ? "🔒" : "🎯"}</span>
+              <span style={{ fontFamily:T.mono, fontSize:13, fontWeight:700, color:tierStyle.color }}>
+                {isLocked ? "LOCKED: " : "PICK: "}
+                {looksPicked.map((lk, i) => `${lk.market} ${lk.lean}${lk.line ? ` (${lk.line})` : ""}`).join(" · ")}
+              </span>
+              <span style={{ fontSize:11, color:T.text2, fontFamily:T.mono }}>· {tierStyle.label}</span>
+            </div>
+          );
+        }
+        if (hasFactorLean) {
+          return (
+            <div style={{ display:"flex", alignItems:"center", gap:8, background:tierStyle.bg,
+              border:`1px solid ${tierStyle.color}40`, borderRadius:8, padding:"8px 12px", margin:"10px 0" }}>
+              <span style={{ fontSize:14 }}>🎯</span>
+              <span style={{ fontFamily:T.mono, fontSize:13, fontWeight:700, color:tierStyle.color }}>
+                PICK: {matchup.overallLean === "Home" ? matchup.homeTeam : matchup.overallLean === "Away" ? matchup.awayTeam : matchup.overallLean}
+              </span>
+              <span style={{ fontSize:11, color:T.text2, fontFamily:T.mono }}>· {tierStyle.label}</span>
+            </div>
+          );
+        }
+        return (
+          <div style={{ fontSize:11, color:T.text2, fontFamily:T.mono, margin:"10px 0" }}>
+            No pick yet — set a lean in "5 Looks" below, or fill in factors
+          </div>
+        );
+      })()}
 
       {/* Amendment panel */}
       {amendment && (
@@ -1937,55 +1958,97 @@ function TabMatchups({ matchups, onAdd, onLog, onDelete, onUpdate }) {
 
 // ─── TAB: TOP 10 ─────────────────────────────────────────────────────────────
 function TabTop10({ matchups }) {
-  const ranked = [...matchups]
+  // "My Picks" — a straight list of what you've actually locked, not a factor-alignment
+  // filter. Locked picks first (sorted by tier), then unlocked-but-leaning games below
+  // so you can see what's building even before lineups post.
+  const withPick = matchups
     .map(m => ({ ...m, _score: computeScore(m) }))
-    .filter(m => m._score.aligned >= 4)
-    .sort((a, b) => b._score.score - a._score.score)
-    .slice(0, 10);
+    .filter(m => {
+      const hasLean = m.overallLean && m.overallLean !== "Push/Skip";
+      const hasLocks = (m.lockedLooks || m.looks || []).some(l => l.lean);
+      return hasLean || hasLocks;
+    });
+  const locked = withPick.filter(m => m.lockedAt).sort((a, b) => a._score.tier - b._score.tier);
+  const unlocked = withPick.filter(m => !m.lockedAt).sort((a, b) => a._score.tier - b._score.tier);
+
+  const PickCard = ({ m, i }) => {
+    const { score, tier } = m._score;
+    const TIER_STYLES = {
+      1:{label:"T1 · ELITE",color:T.green,bg:`${T.green}15`},
+      2:{label:"T2 · STRONG",color:T.amber,bg:`${T.amber}12`},
+      3:{label:"T3 · LEAN",color:T.text1,bg:T.bg3},
+      4:{label:"T4 · PASS",color:T.red,bg:`${T.red}10`},
+    };
+    const ts = TIER_STYLES[tier] || TIER_STYLES[4];
+    const picks = (m.lockedLooks || m.looks || []).filter(l => l.lean);
+    return (
+      <div className="de-card" style={{ borderColor: m.lockedAt ? T.green : T.border, borderWidth: m.lockedAt ? 2 : 1 }}>
+        <div style={{ display: "flex", gap: 14, alignItems: "flex-start" }}>
+          <div className="de-rank">#{i + 1}</div>
+          <div style={{ flex: 1 }}>
+            <div style={{ display: "flex", justifyContent:"space-between", alignItems:"flex-start", flexWrap:"wrap", gap:8 }}>
+              <div className="de-matchup-teams" style={{ marginBottom: 4, display:"flex", alignItems:"center", gap:6 }}>
+                <TeamLogo abbr={m.awayTeam} size={22} />
+                <span className="de-team-abbr" style={{ color: T.blue }}>{m.awayTeam}</span>
+                <span className="de-vs">@</span>
+                <span className="de-team-abbr" style={{ color: T.green }}>{m.homeTeam}</span>
+                <TeamLogo abbr={m.homeTeam} size={22} />
+              </div>
+              <span style={{ fontFamily:T.mono, fontSize:11, fontWeight:700, padding:"3px 9px", borderRadius:20,
+                background:ts.bg, color:ts.color, border:`1px solid ${ts.color}40`, whiteSpace:"nowrap" }}>
+                {m.lockedAt ? "🔒 " : ""}{ts.label}
+              </span>
+            </div>
+            <div className="de-meta">{fmtDate(m.date)}{m.gameTime ? ` · ${m.gameTime}` : ""} · score {score}</div>
+          </div>
+        </div>
+        {picks.length > 0 ? (
+          <div style={{ marginTop: 10 }}>
+            {picks.map((lk, li) => (
+              <div key={li} style={{ display: "flex", justifyContent: "space-between", padding: "6px 0", borderTop: li === 0 ? "none" : `1px solid ${T.border}30` }}>
+                <span style={{ fontSize: 12, color: T.text2 }}>{lk.market}</span>
+                <span style={{ fontFamily: T.mono, fontSize: 13, fontWeight: 700, color: dirColor(lk.lean) }}>{lk.lean} {lk.line && `(${lk.line})`}</span>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <div style={{ marginTop: 10, fontSize: 12, color: T.text2, fontFamily: T.mono }}>
+            🎯 Lean: {m.overallLean} — no specific market locked yet
+          </div>
+        )}
+      </div>
+    );
+  };
 
   return (
     <div className="de-body">
       <div style={{ marginBottom: 18 }}>
-        <div style={{ fontSize: 18, fontWeight: 700, color: T.text0, marginBottom: 4 }}>Top 10 Plays</div>
-        <div style={{ fontSize: 12, color: T.text2 }}>Only games where 4+ factors align in one direction. Ranked by total factor score.</div>
+        <div style={{ fontSize: 18, fontWeight: 700, color: T.text0, marginBottom: 4 }}>My Picks</div>
+        <div style={{ fontSize: 12, color: T.text2 }}>Everything you've locked or leaned on — locked picks first, ranked by tier.</div>
       </div>
-      <div className="de-warning" style={{ marginBottom: 16 }}>
-        <strong>Critical:</strong> Factor alignment ≠ probability. Books have already seen these signals. This ranking shows data concentration, not market inefficiency.
-      </div>
-      {ranked.length === 0 && (
+      {locked.length === 0 && unlocked.length === 0 && (
         <div className="de-empty">
-          <div className="de-empty-icon">📊</div>
-          <div className="de-empty-title">No plays meet the 4-factor threshold</div>
-          <div className="de-empty-sub">Add matchups and fill in the factor stack to generate rankings</div>
+          <div className="de-empty-icon">🎯</div>
+          <div className="de-empty-title">No picks yet</div>
+          <div className="de-empty-sub">Set a market lean on Today's Slate, then Lock when lineups post — it'll show up here</div>
         </div>
       )}
-      {ranked.map((m, i) => {
-        const { score, aligned } = m._score;
-        return (
-          <div key={m.id} className="de-card">
-            <div style={{ display: "flex", gap: 14, alignItems: "center" }}>
-              <div className="de-rank">#{i + 1}</div>
-              <div style={{ flex: 1 }}>
-                <div className="de-matchup-teams" style={{ marginBottom: 4, display:"flex", alignItems:"center", gap:6 }}>
-                  <TeamLogo abbr={m.awayTeam} size={22} />
-                  <span className="de-team-abbr" style={{ color: T.blue }}>{m.awayTeam}</span>
-                  <span className="de-vs">@</span>
-                  <span className="de-team-abbr" style={{ color: T.green }}>{m.homeTeam}</span>
-                  <TeamLogo abbr={m.homeTeam} size={22} />
-                  <span style={{ marginLeft: 8 }}><span className={`de-badge ${scoreToClass(score)}`}>{scoreLabel(score)} {score}</span></span>
-                </div>
-                <div className="de-meta">{fmtDate(m.date)} · {aligned}/{FACTORS.length} factors → {m.overallLean}</div>
-              </div>
-            </div>
-            {m.looks?.filter(l => l.lean).slice(0, 2).map((lk, li) => (
-              <div key={li} style={{ display: "flex", justifyContent: "space-between", padding: "5px 0", borderTop: `1px solid ${T.border}30`, marginTop: li === 0 ? 10 : 0 }}>
-                <span style={{ fontSize: 11, color: T.text2 }}>{lk.market}</span>
-                <span style={{ fontFamily: T.mono, fontSize: 12, fontWeight: 700, color: dirColor(lk.lean) }}>{lk.lean} {lk.line && `(${lk.line})`}</span>
-              </div>
-            ))}
+      {locked.length > 0 && (
+        <>
+          <div style={{ fontSize:11, color:T.green, fontFamily:T.mono, fontWeight:700, marginBottom:8, textTransform:"uppercase", letterSpacing:"0.5px" }}>
+            🔒 Locked ({locked.length})
           </div>
-        );
-      })}
+          {locked.map((m, i) => <PickCard key={m.id} m={m} i={i} />)}
+        </>
+      )}
+      {unlocked.length > 0 && (
+        <>
+          <div style={{ fontSize:11, color:T.amber, fontFamily:T.mono, fontWeight:700, marginTop: locked.length ? 20 : 0, marginBottom:8, textTransform:"uppercase", letterSpacing:"0.5px" }}>
+            ⏳ Leaning, not locked yet ({unlocked.length}) — lineups may not be posted
+          </div>
+          {unlocked.map((m, i) => <PickCard key={m.id} m={m} i={i} />)}
+        </>
+      )}
     </div>
   );
 }
@@ -3231,7 +3294,7 @@ export default function DiamondEdge() {
 
   const TABS = [
     "Today's Slate",
-    "Top 10",
+    "My Picks",
     `Series${sweepSpotCount > 0 ? ` ⚡${sweepSpotCount}` : ""}`,
     `Pitchers${fireCount > 0 ? ` 🔥${fireCount}` : ""}`,
     "Grade Log",

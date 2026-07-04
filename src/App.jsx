@@ -2415,6 +2415,8 @@ function getSweepSpotSignal(series) {
 // ─── TAB: SERIES MONITOR ─────────────────────────────────────────────────────
 function TabSeries({ seriesList, onAdd, onUpdate, onDelete }) {
   const [showForm, setShowForm] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const [loadMsg, setLoadMsg] = useState(null);
   const [blank] = useState({
     id: "", homeTeam: "NYY", awayTeam: "BOS",
     homeScore: 0, awayScore: 0, seriesLen: 3,
@@ -2428,15 +2430,81 @@ function TabSeries({ seriesList, onAdd, onUpdate, onDelete }) {
 
   const sweepSpots = seriesList.filter(s => getSweepSpotSignal(s).alert);
 
+  // Auto-detect today's active series by comparing today's slate to prior 3 days' games
+  const loadActiveSeries = async () => {
+    setLoading(true);
+    setLoadMsg(null);
+    try {
+      const today = mlbApi.todayET();
+      const [d0, d1, d2, d3] = await Promise.all([
+        mlbApi.schedule(today),
+        mlbApi.schedule(new Date(new Date(today).getTime() - 86400000).toISOString().split("T")[0]),
+        mlbApi.schedule(new Date(new Date(today).getTime() - 2 * 86400000).toISOString().split("T")[0]),
+        mlbApi.schedule(new Date(new Date(today).getTime() - 3 * 86400000).toISOString().split("T")[0]),
+      ]);
+      const priorFinals = [...d1, ...d2, ...d3].filter(g => g.status === "Final");
+      const existing = new Set(seriesList.map(s => `${s.awayTeam}@${s.homeTeam}`));
+      let added = 0;
+      for (const g of d0) {
+        const key = `${g.away.abbr}@${g.home.abbr}`;
+        if (existing.has(key)) continue;
+        // Find prior games between same teams (either home/away arrangement counts)
+        const prior = priorFinals.filter(p =>
+          (p.away.abbr === g.away.abbr && p.home.abbr === g.home.abbr) ||
+          (p.away.abbr === g.home.abbr && p.home.abbr === g.away.abbr)
+        );
+        if (prior.length === 0) continue; // new series, nothing to track yet
+        let hw = 0, aw = 0;
+        for (const p of prior) {
+          const hr = p.home.score || 0, ar = p.away.score || 0;
+          // Determine which of TODAY's teams won that prior game
+          if (p.home.abbr === g.home.abbr) {
+            if (hr > ar) hw++; else aw++;
+          } else {
+            // teams flipped home/away in the prior game
+            if (hr > ar) aw++; else hw++;
+          }
+        }
+        onAdd({
+          id: genId(),
+          homeTeam: g.home.abbr, awayTeam: g.away.abbr,
+          homeScore: hw, awayScore: aw,
+          seriesLen: prior.length >= 3 ? 4 : 3, // if 3+ prior games, must be 4-game series
+          homeWinPct: 0.500, awayWinPct: 0.500, // manual: user fills win%
+          startDate: today, notes: `Auto-loaded · ${prior.length} prior game${prior.length>1?"s":""} played`,
+        });
+        added++;
+        existing.add(key);
+      }
+      setLoadMsg(added > 0
+        ? `✓ Added ${added} active series — set each team's win% to activate sweep-spot signals`
+        : "No active series detected (all today's games are series openers, or already tracked)"
+      );
+    } catch (e) {
+      setLoadMsg("⚠ Load failed: " + e.message);
+    } finally {
+      setLoading(false);
+    }
+  };
+
   return (
     <div className="de-body">
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 18 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 18, flexWrap:"wrap", gap:10 }}>
         <div>
           <div style={{ fontSize: 18, fontWeight: 700, color: T.text0 }}>Series Monitor</div>
           <div style={{ fontSize: 12, color: T.text2, marginTop: 2 }}>Track active series and identify sweep-spot value situations</div>
         </div>
-        <button className="de-btn" onClick={() => setShowForm(f => !f)}>{showForm ? "Cancel" : "+ Add Series"}</button>
+        <div style={{ display:"flex", gap:8 }}>
+          <button className="de-btn" style={{ background: loading ? T.bg3 : T.blue, color: loading ? T.text2 : "#0f1117" }}
+            onClick={loadActiveSeries} disabled={loading}>
+            {loading ? "Detecting..." : "⚡ Load Active Series"}
+          </button>
+          <button className="de-btn-ghost" onClick={() => setShowForm(f => !f)}>{showForm ? "Cancel" : "+ Manual"}</button>
+        </div>
       </div>
+      {loadMsg && (
+        <div style={{ fontSize:12, fontFamily:T.mono, color: loadMsg.startsWith("⚠") ? T.red : T.green, marginBottom:12 }}>{loadMsg}</div>
+      )}
 
       {/* Sweep spot explainer */}
       <div className="de-card" style={{ borderColor: T.amberDim, background: `${T.amber}08`, marginBottom: 16 }}>

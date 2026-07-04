@@ -382,7 +382,7 @@ const TEAM_IDS_BY_ABBR = {
 const TeamLogo = ({ abbr, size = 32 }) => {
   const id = TEAM_IDS_BY_ABBR[abbr];
   if (!id) return React.createElement('div', {style:{width:size,height:size,borderRadius:'50%',background:'#2a3349',display:'flex',alignItems:'center',justifyContent:'center',fontSize:size*0.35,fontWeight:700,color:'#9aa5be'}}, abbr&&abbr.slice(0,2));
-  return React.createElement('img', {src:'https://www.mlb.com/assets/images/teams/logos/MLB_'+id+'_logo.svg',alt:abbr,width:size,height:size,style:{objectFit:'contain'},onError:e=>{e.target.style.display='none'}});
+  return React.createElement('img', {src:'https://www.mlbstatic.com/team-logos/'+id+'.svg',alt:abbr,width:size,height:size,style:{objectFit:'contain'},onError:e=>{e.target.style.display='none'}});
 };
 // Last name only — "Dylan Cease" -> "Cease". Handles TBD/null safely.
 const lastName = (fullName) => {
@@ -598,7 +598,17 @@ const dotClass = (dir, homeTeam) => {
   if (dir === "Home" || dir === `${homeTeam}`) return "dot-home";
   return "dot-away";
 };
-const fmtDate = (d) => new Date(d).toLocaleDateString("en-US", { month: "short", day: "numeric" });
+// Parse "YYYY-MM-DD" as LOCAL date, not UTC — new Date("2026-07-03") is UTC midnight
+// which displays as Jul 2 in US timezones. This was mislabeling every card.
+const fmtDate = (d) => {
+  if (!d) return "";
+  const parts = String(d).split("-");
+  if (parts.length === 3) {
+    return new Date(parseInt(parts[0]), parseInt(parts[1]) - 1, parseInt(parts[2]))
+      .toLocaleDateString("en-US", { month: "short", day: "numeric" });
+  }
+  return new Date(d).toLocaleDateString("en-US", { month: "short", day: "numeric" });
+};
 const genId = () => Math.random().toString(36).slice(2, 9);
 
 // ─── STORAGE ─────────────────────────────────────────────────────────────────
@@ -2851,6 +2861,44 @@ function TabPitchers({ pitchers, onAdd, onUpdate, onDelete }) {
   const [editTarget, setEditTarget] = useState(null);
   const [sortBy, setSortBy] = useState("score");
   const [filterHeat, setFilterHeat] = useState("all");
+  const [probLoading, setProbLoading] = useState(false);
+  const [probMsg, setProbMsg] = useState(null);
+
+  // Auto-pull today's probable starters + their season stats from statsapi
+  const loadProbables = async () => {
+    setProbLoading(true);
+    setProbMsg(null);
+    try {
+      const games = await mlbApi.schedule(mlbApi.todayET());
+      const existing = new Set(pitchers.map(p => p.name));
+      let added = 0;
+      for (const g of games) {
+        for (const side of ["away", "home"]) {
+          const t = g[side];
+          const opp = side === "away" ? g.home.abbr : g.away.abbr;
+          if (!t.probable || !t.probableId || existing.has(t.probable)) continue;
+          const s = await mlbProjection.pitcherStats(t.probableId);
+          onAdd({
+            id: genId(), name: t.probable, team: t.abbr, hand: "R",
+            era: s?.era ?? "", fip: "", xfip: "", kPct: "", bbPct: "",
+            whip: s?.whip ?? "", swStr: "", kPer9: s?.kPer9 ?? "",
+            innings: s?.inningsPitched ?? "",
+            shutouts: 0, last3Qs: 0,
+            lastStart: "", restDays: 5,
+            nextOpp: opp, nextOppTier: "avg",
+            notes: s?.last5ERA ? `L5 ERA ${s.last5ERA} (n=${s.last5n}) · auto-loaded` : "auto-loaded from statsapi",
+          });
+          existing.add(t.probable);
+          added++;
+        }
+      }
+      setProbMsg(added > 0 ? `✓ Added ${added} probable starters with season stats` : "All of today's probables already tracked");
+    } catch (e) {
+      setProbMsg("⚠ Load failed: " + e.message);
+    } finally {
+      setProbLoading(false);
+    }
+  };
 
   const scored = pitchers.map(p => ({ ...p, _score: getPitcherScore(p) }));
   const sorted = [...scored]
@@ -2884,8 +2932,17 @@ function TabPitchers({ pitchers, onAdd, onUpdate, onDelete }) {
           <div style={{ fontSize:18, fontWeight:700, color:T.text0 }}>Pitcher Leaderboard</div>
           <div style={{ fontSize:12, color:T.text2, marginTop:2 }}>Track who's cooking — K's, shutouts, ERA vs FIP, and next matchup value</div>
         </div>
-        <button className="de-btn" onClick={()=>{setEditTarget(null);setShowModal(true);}}>+ Add Pitcher</button>
+        <div style={{ display:"flex", gap:8 }}>
+          <button className="de-btn" style={{ background: probLoading ? T.bg3 : T.blue, color: probLoading ? T.text2 : "#0f1117" }}
+            onClick={loadProbables} disabled={probLoading}>
+            {probLoading ? "Loading stats..." : "⚡ Load Today's Probables"}
+          </button>
+          <button className="de-btn-ghost" onClick={()=>{setEditTarget(null);setShowModal(true);}}>+ Manual</button>
+        </div>
       </div>
+      {probMsg && (
+        <div style={{ fontSize:12, fontFamily:T.mono, color: probMsg.startsWith("⚠") ? T.red : T.green, marginBottom:12 }}>{probMsg}</div>
+      )}
 
       {/* Summary */}
       {pitchers.length>0&&(

@@ -2291,6 +2291,49 @@ Be specific. Cite the numbers. If the sample is too small to conclude anything, 
   );
 }
 
+// ─── TAB: ODDS COMPARE (embed OddsGuard widget — 75 books, incl. Pinnacle) ───
+function TabOdds() {
+  const [theme, setTheme] = useState("dark");
+  const [size, setSize] = useState("full");
+  const src = `https://oddsguard.com/embed/widget?theme=${theme}&size=${size}&sport=baseball&league=baseball_mlb&oddsFormat=American`;
+  return (
+    <div className="de-body">
+      <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-start", marginBottom:14, flexWrap:"wrap", gap:10 }}>
+        <div>
+          <div style={{ fontSize:18, fontWeight:700, color:T.text0 }}>Odds Compare</div>
+          <div style={{ fontSize:12, color:T.text2, marginTop:2 }}>
+            75 sportsbooks including <strong style={{ color:T.amber }}>Pinnacle</strong> and Circa. Look for gaps between books — that's where the edge lives.
+          </div>
+        </div>
+        <div style={{ display:"flex", gap:6 }}>
+          <select className="de-select" style={{ fontSize:11, padding:"4px 8px" }} value={theme} onChange={e=>setTheme(e.target.value)}>
+            <option value="dark">Dark</option>
+            <option value="dark-blue">Dark Blue</option>
+            <option value="dark-emerald">Dark Emerald</option>
+            <option value="light">Light</option>
+          </select>
+          <select className="de-select" style={{ fontSize:11, padding:"4px 8px" }} value={size} onChange={e=>setSize(e.target.value)}>
+            <option value="full">Full</option>
+            <option value="medium">Medium</option>
+            <option value="minimal">Compact</option>
+          </select>
+        </div>
+      </div>
+      <div className="de-card" style={{ padding:0, overflow:"hidden", background:T.bg2, minHeight:600 }}>
+        <iframe
+          src={src}
+          title="MLB Odds Comparison"
+          style={{ width:"100%", height:"78vh", minHeight:600, border:"none", display:"block", background:"transparent" }}
+          allow="clipboard-read; clipboard-write"
+        />
+      </div>
+      <div style={{ fontSize:10, color:T.text2, fontFamily:T.mono, marginTop:10, lineHeight:1.6 }}>
+        ⚡ Look for two-book disagreements on the same line — that's the "lazy line" signal (like the Valdez u5.5 K WIN on 7/2 when DK said 5.5 and MGM said 4.5). Pinnacle is the sharp reference. Powered by <a href="https://oddsguard.com" target="_blank" rel="noreferrer" style={{ color:T.blue }}>OddsGuard</a>.
+      </div>
+    </div>
+  );
+}
+
 // ─── TAB: GUIDE ───────────────────────────────────────────────────────────────
 function TabGuide() {
   const items = [
@@ -3144,6 +3187,7 @@ export default function DiamondEdge() {
     `Series${sweepSpotCount > 0 ? ` ⚡${sweepSpotCount}` : ""}`,
     `Pitchers${fireCount > 0 ? ` 🔥${fireCount}` : ""}`,
     "Grade Log",
+    "Odds",
     "Guide",
   ];
 
@@ -3174,7 +3218,8 @@ export default function DiamondEdge() {
             {tab === 2 && <TabSeries seriesList={series} onAdd={handleAddSeries} onUpdate={handleUpdateSeries} onDelete={handleDeleteSeries} />}
             {tab === 3 && <TabPitchers pitchers={pitchers} onAdd={handleAddPitcher} onUpdate={handleUpdatePitcher} onDelete={handleDeletePitcher} />}
             {tab === 4 && <TabLog log={log} matchups={matchups} onUpdateLog={handleUpdateLog} />}
-            {tab === 5 && <TabGuide />}
+            {tab === 5 && <TabOdds />}
+            {tab === 6 && <TabGuide />}
           </>
         )}
       </div>

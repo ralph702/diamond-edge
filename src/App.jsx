@@ -1961,7 +1961,11 @@ function TabTop10({ matchups }) {
   // "My Picks" — a straight list of what you've actually locked, not a factor-alignment
   // filter. Locked picks first (sorted by tier), then unlocked-but-leaning games below
   // so you can see what's building even before lineups post.
-  const withPick = matchups
+  // TODAY ONLY on the main view — yesterday's picks belong in Grade Log, not here.
+  const today = mlbApi.todayET();
+  const [showAllDates, setShowAllDates] = useState(false);
+  const dateFiltered = showAllDates ? matchups : matchups.filter(m => m.date === today);
+  const withPick = dateFiltered
     .map(m => ({ ...m, _score: computeScore(m) }))
     .filter(m => {
       const hasLean = m.overallLean && m.overallLean !== "Push/Skip";
@@ -2022,9 +2026,14 @@ function TabTop10({ matchups }) {
 
   return (
     <div className="de-body">
-      <div style={{ marginBottom: 18 }}>
-        <div style={{ fontSize: 18, fontWeight: 700, color: T.text0, marginBottom: 4 }}>My Picks</div>
-        <div style={{ fontSize: 12, color: T.text2 }}>Everything you've locked or leaned on — locked picks first, ranked by tier.</div>
+      <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-start", marginBottom: 18, flexWrap:"wrap", gap:10 }}>
+        <div>
+          <div style={{ fontSize: 18, fontWeight: 700, color: T.text0, marginBottom: 4 }}>My Picks — {fmtDate(today)}</div>
+          <div style={{ fontSize: 12, color: T.text2 }}>Everything you've locked or leaned on — locked picks first, ranked by tier.</div>
+        </div>
+        <button className="de-btn-ghost" style={{ fontSize:11 }} onClick={() => setShowAllDates(v => !v)}>
+          {showAllDates ? "Show today only" : "Show all dates"}
+        </button>
       </div>
       {locked.length === 0 && unlocked.length === 0 && (
         <div className="de-empty">
@@ -2887,7 +2896,219 @@ function TabSeries({ seriesList, onAdd, onUpdate, onDelete }) {
   );
 }
 
-// ─── PITCHER LEADERBOARD DATA ─────────────────────────────────────────────────
+// ─── BATTER LEADERBOARD DATA (spot lazy hit/HR prop lines) ────────────────────
+const BATTERS_KEY = "de_batters_v1";
+const loadBatters = async () => {
+  try { const r = await storage.get(BATTERS_KEY); return r ? JSON.parse(r.value) : []; }
+  catch { return []; }
+};
+const saveBatters = async (data) => {
+  try { await storage.set(BATTERS_KEY, JSON.stringify(data)); } catch {}
+};
+
+// Heat score: flags hitters averaging enough hits/game or HR rate to make a
+// thin prop line (e.g. 1.5 hits, 0.5 HR) worth checking against the book.
+function getBatterScore(b) {
+  let score = 0;
+  const hitsPerG = b.hits && b.games ? b.hits / b.games : 0;
+  const hrPerG = b.hr && b.games ? b.hr / b.games : 0;
+  if (hitsPerG >= 1.4) score += 2; else if (hitsPerG >= 1.15) score += 1;
+  if (b.avg && b.avg >= 0.300) score += 2; else if (b.avg && b.avg >= 0.270) score += 1;
+  if (hrPerG >= 0.28) score += 2; else if (hrPerG >= 0.18) score += 1;
+  if (b.iso && b.iso >= 0.220) score += 1;
+  if (b.parkFactor && b.parkFactor >= 1.05) score += 1; // hitter-friendly park boost
+  if (b.hardHitPct && b.hardHitPct >= 45) score += 1;
+  return score;
+}
+function getBatterHeat(score) {
+  if (score >= 7) return { label: "🔥 Locked In", color: "#e85d6a" };
+  if (score >= 5) return { label: "⚡ Hot", color: "#d4954a" };
+  if (score >= 3) return { label: "✓ Solid", color: "#3ecf6a" };
+  return { label: "— Avg", color: "#5c6783" };
+}
+// Flag a prop line as "lazy" if it sits well below the player's actual per-game rate
+function checkLazyLine(b) {
+  if (!b.propLine || !b.games) return null;
+  const line = parseFloat(b.propLine);
+  const propType = b.propType || "hits";
+  const perG = propType === "hr" ? (b.hr || 0) / b.games : (b.hits || 0) / b.games;
+  const gap = perG - line;
+  if (gap >= 0.5) return { label: "⚡ LAZY LINE", color: "#3ecf6a", note: `Averaging ${perG.toFixed(2)}/game vs line of ${line}` };
+  if (gap <= -0.4) return { label: "OVERPRICED", color: "#e85d6a", note: `Averaging ${perG.toFixed(2)}/game vs line of ${line}` };
+  return null;
+}
+
+// ─── TAB: BATTER LEADERBOARD ──────────────────────────────────────────────────
+function TabBatters({ batters, onAdd, onUpdate, onDelete, matchups }) {
+  const [showModal, setShowModal] = useState(false);
+  const [editTarget, setEditTarget] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const [loadMsg, setLoadMsg] = useState(null);
+
+  const loadTeamHitters = async () => {
+    setLoading(true);
+    setLoadMsg(null);
+    try {
+      const today = mlbApi.todayET();
+      const todayGames = matchups.filter(m => m.date === today);
+      const teamIds = [...new Set(todayGames.flatMap(m => [m.homeTeamId, m.awayTeamId]).filter(Boolean))];
+      const existing = new Set(batters.map(b => b.name));
+      let added = 0;
+      for (const teamId of teamIds) {
+        const teamAbbr = todayGames.find(m => m.homeTeamId === teamId)?.homeTeam
+          || todayGames.find(m => m.awayTeamId === teamId)?.awayTeam || "";
+        const r = await fetch(`https://statsapi.mlb.com/api/v1/teams/${teamId}/leaders?leaderCategories=battingAverage,homeRuns&season=2026&leaderGameTypes=R&limit=3`);
+        if (!r.ok) continue;
+        const j = await r.json();
+        const categories = j.teamLeaders || [];
+        const seenNames = new Set();
+        for (const cat of categories) {
+          for (const leader of (cat.leaders || []).slice(0, 3)) {
+            const name = leader.person?.fullName;
+            if (!name || existing.has(name) || seenNames.has(name)) continue;
+            seenNames.add(name);
+            const sr = await fetch(`https://statsapi.mlb.com/api/v1/people/${leader.person.id}/stats?stats=season&group=hitting&season=2026`);
+            const sj = await sr.json();
+            const stat = sj.stats?.[0]?.splits?.[0]?.stat;
+            if (!stat) continue;
+            onAdd({
+              id: genId(), name, team: teamAbbr,
+              games: parseInt(stat.gamesPlayed) || 0,
+              hits: parseInt(stat.hits) || 0,
+              hr: parseInt(stat.homeRuns) || 0,
+              avg: parseFloat(stat.avg) || 0,
+              obp: parseFloat(stat.obp) || 0,
+              slg: parseFloat(stat.slg) || 0,
+              iso: (parseFloat(stat.slg) || 0) - (parseFloat(stat.avg) || 0),
+              parkFactor: PARK_FACTORS[teamAbbr] || 1.00,
+              hardHitPct: "",
+              propType: "hits", propLine: "",
+              notes: "auto-loaded from statsapi season leaders",
+            });
+            existing.add(name);
+            added++;
+          }
+        }
+      }
+      setLoadMsg(added > 0 ? `✓ Added ${added} hitter${added !== 1 ? "s" : ""} from today's teams` : "All qualifying hitters already tracked");
+    } catch (e) {
+      setLoadMsg("⚠ Load failed: " + e.message);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const sorted = [...batters].sort((a, b) => getBatterScore(b) - getBatterScore(a));
+
+  return (
+    <div className="de-body">
+      <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-start", marginBottom:18, flexWrap:"wrap", gap:10 }}>
+        <div>
+          <div style={{ fontSize:18, fontWeight:700, color:T.text0 }}>Batter Leaderboard</div>
+          <div style={{ fontSize:12, color:T.text2, marginTop:2 }}>
+            Track hot hitters. Enter a prop line to check if the book is lazy — e.g. a guy hitting 1.4 hits/game priced at 1.5.
+          </div>
+        </div>
+        <div style={{ display:"flex", gap:8 }}>
+          <button className="de-btn" style={{ background: loading ? T.bg3 : T.blue, color: loading ? T.text2 : "#0f1117" }}
+            onClick={loadTeamHitters} disabled={loading}>
+            {loading ? "Loading..." : "⚡ Load Today's Team Hitters"}
+          </button>
+          <button className="de-btn-ghost" onClick={() => { setEditTarget(null); setShowModal(true); }}>+ Manual</button>
+        </div>
+      </div>
+      {loadMsg && (
+        <div style={{ fontSize:12, fontFamily:T.mono, color: loadMsg.startsWith("⚠") ? T.red : T.green, marginBottom:12 }}>{loadMsg}</div>
+      )}
+
+      {sorted.length === 0 && (
+        <div className="de-empty">
+          <div className="de-empty-icon">🏏</div>
+          <div className="de-empty-title">No hitters tracked yet</div>
+          <div className="de-empty-sub">Tap ⚡ Load Today's Team Hitters to pull season leaders for today's slate</div>
+        </div>
+      )}
+
+      {sorted.map(b => {
+        const score = getBatterScore(b);
+        const heat = getBatterHeat(score);
+        const lazy = checkLazyLine(b);
+        const hitsPerG = b.games ? (b.hits / b.games).toFixed(2) : "—";
+        const hrPerG = b.games ? (b.hr / b.games).toFixed(2) : "—";
+        return (
+          <div key={b.id} className="de-card">
+            <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-start", flexWrap:"wrap", gap:8 }}>
+              <div>
+                <div style={{ fontSize:15, fontWeight:700, color:T.text0 }}>{b.name} <span style={{ fontSize:11, color:T.text2, fontWeight:400 }}>{b.team}</span></div>
+                <div style={{ fontSize:11, color:T.text2, fontFamily:T.mono, marginTop:2 }}>
+                  {(b.avg || 0).toFixed(3)} AVG · {hitsPerG} H/G · {hrPerG} HR/G · {b.games || 0} G
+                </div>
+              </div>
+              <span style={{ fontFamily:T.mono, fontSize:11, fontWeight:700, padding:"3px 9px", borderRadius:20, color:heat.color, border:`1px solid ${heat.color}40` }}>
+                {heat.label} {score}
+              </span>
+            </div>
+            <div style={{ display:"flex", gap:8, marginTop:10, flexWrap:"wrap", alignItems:"flex-end" }}>
+              <div>
+                <div style={{ fontSize:10, color:T.text2, marginBottom:3 }}>Prop type</div>
+                <select className="de-select" style={{ fontSize:12 }} value={b.propType || "hits"}
+                  onChange={e => onUpdate({ ...b, propType: e.target.value })}>
+                  <option value="hits">Hits</option>
+                  <option value="hr">Home Runs</option>
+                </select>
+              </div>
+              <div>
+                <div style={{ fontSize:10, color:T.text2, marginBottom:3 }}>Book's line</div>
+                <input className="de-input" style={{ fontSize:12, width:80 }} placeholder="e.g. 1.5"
+                  value={b.propLine || ""} onChange={e => onUpdate({ ...b, propLine: e.target.value })} />
+              </div>
+              {lazy && (
+                <div style={{ fontFamily:T.mono, fontSize:12, fontWeight:700, color:lazy.color, paddingBottom:8 }}>
+                  {lazy.label} — {lazy.note}
+                </div>
+              )}
+              <button className="de-btn-danger" style={{ marginLeft:"auto" }} onClick={() => onDelete(b.id)}>Remove</button>
+            </div>
+          </div>
+        );
+      })}
+
+      {showModal && (
+        <BatterModal
+          initial={editTarget}
+          onSave={b => { editTarget ? onUpdate(b) : onAdd({ ...b, id: genId() }); setShowModal(false); setEditTarget(null); }}
+          onClose={() => { setShowModal(false); setEditTarget(null); }}
+        />
+      )}
+    </div>
+  );
+}
+
+function BatterModal({ initial, onSave, onClose }) {
+  const [f, setF] = useState(initial || { name:"", team:"", games:"", hits:"", hr:"", avg:"", propType:"hits", propLine:"" });
+  const set = (k, v) => setF(p => ({ ...p, [k]: v }));
+  return (
+    <div className="de-modal-overlay" onClick={onClose}>
+      <div className="de-modal" onClick={e => e.stopPropagation()}>
+        <div className="de-section-title">Add Batter</div>
+        {[["name","Name"],["team","Team"],["games","Games"],["hits","Hits"],["hr","HR"],["avg","AVG"]].map(([k,l]) => (
+          <div key={k} style={{ marginBottom:8 }}>
+            <div style={{ fontSize:11, color:T.text2, marginBottom:3 }}>{l}</div>
+            <input className="de-input" value={f[k] || ""} onChange={e => set(k, e.target.value)} />
+          </div>
+        ))}
+        <div style={{ display:"flex", gap:8, marginTop:14 }}>
+          <button className="de-btn" onClick={() => onSave({
+            ...f, games: parseInt(f.games)||0, hits: parseInt(f.hits)||0, hr: parseInt(f.hr)||0, avg: parseFloat(f.avg)||0,
+          })}>Save</button>
+          <button className="de-btn-ghost" onClick={onClose}>Cancel</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+
 const PITCHERS_KEY = "de_pitchers_v1";
 const loadPitchers = async () => {
   try { const r = await storage.get(PITCHERS_KEY); return r ? JSON.parse(r.value) : []; }
@@ -3267,12 +3488,13 @@ export default function DiamondEdge() {
   const [log, setLog] = useState([]);
   const [series, setSeries] = useState([]);
   const [pitchers, setPitchers] = useState([]);
+  const [batters, setBatters] = useState([]);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     (async () => {
-      const [m, l, s, p] = await Promise.all([loadMatchups(), loadLog(), loadSeries(), loadPitchers()]);
-      setMatchups(m); setLog(l); setSeries(s); setPitchers(p);
+      const [m, l, s, p, b] = await Promise.all([loadMatchups(), loadLog(), loadSeries(), loadPitchers(), loadBatters()]);
+      setMatchups(m); setLog(l); setSeries(s); setPitchers(p); setBatters(b);
       setLoading(false);
     })();
   }, []);
@@ -3288,6 +3510,9 @@ export default function DiamondEdge() {
   const handleAddPitcher = async (p) => { const next=[p,...pitchers]; setPitchers(next); await savePitchers(next); };
   const handleUpdatePitcher = async (p) => { const next=pitchers.map(x=>x.id===p.id?p:x); setPitchers(next); await savePitchers(next); };
   const handleDeletePitcher = async (id) => { const next=pitchers.filter(p=>p.id!==id); setPitchers(next); await savePitchers(next); };
+  const handleAddBatter = (b) => { setBatters(prev => { const next=[b,...prev]; saveBatters(next); return next; }); };
+  const handleUpdateBatter = (b) => { setBatters(prev => { const next=prev.map(x=>x.id===b.id?b:x); saveBatters(next); return next; }); };
+  const handleDeleteBatter = (id) => { setBatters(prev => { const next=prev.filter(b=>b.id!==id); saveBatters(next); return next; }); };
 
   const sweepSpotCount = series.filter(s => getSweepSpotSignal(s).alert).length;
   const fireCount = pitchers.filter(p => getPitcherScore(p) >= 7).length;
@@ -3297,6 +3522,7 @@ export default function DiamondEdge() {
     "My Picks",
     `Series${sweepSpotCount > 0 ? ` ⚡${sweepSpotCount}` : ""}`,
     `Pitchers${fireCount > 0 ? ` 🔥${fireCount}` : ""}`,
+    "Batters",
     "Grade Log",
     "Odds",
     "Guide",
@@ -3328,9 +3554,10 @@ export default function DiamondEdge() {
             {tab === 1 && <TabTop10 matchups={matchups} />}
             {tab === 2 && <TabSeries seriesList={series} onAdd={handleAddSeries} onUpdate={handleUpdateSeries} onDelete={handleDeleteSeries} />}
             {tab === 3 && <TabPitchers pitchers={pitchers} onAdd={handleAddPitcher} onUpdate={handleUpdatePitcher} onDelete={handleDeletePitcher} />}
-            {tab === 4 && <TabLog log={log} matchups={matchups} onUpdateLog={handleUpdateLog} />}
-            {tab === 5 && <TabOdds />}
-            {tab === 6 && <TabGuide />}
+            {tab === 4 && <TabBatters batters={batters} matchups={matchups} onAdd={handleAddBatter} onUpdate={handleUpdateBatter} onDelete={handleDeleteBatter} />}
+            {tab === 5 && <TabLog log={log} matchups={matchups} onUpdateLog={handleUpdateLog} />}
+            {tab === 6 && <TabOdds />}
+            {tab === 7 && <TabGuide />}
           </>
         )}
       </div>

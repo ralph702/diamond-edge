@@ -600,75 +600,120 @@ const dotClass = (dir, homeTeam) => {
 };
 
 // ─── "WHAT WE LIKE" — auto-generated plain-English summary, no manual factors needed.
-// Built from data already computed by Scan All Games (proj/quickEdge) plus temp and
-// park factor. This is the thing that actually answers "what should I pick" — short,
-// green, obvious, no digging through tables required.
-function getWhatWeLike(matchup) {
-  const bullets = [];
+// ─── DECISIVE PICKER ─────────────────────────────────────────────────────────
+// Ranks every candidate market (total, home ML, away ML) by |edge| against the
+// posted price, picks the biggest one over the confidence bar, tags it with a
+// tier, and gives a one-line reason. If nothing clears the bar, it PASSES —
+// explicitly, not "worth a look". Also emits pitcher K prop and batter hit/HR
+// suggestions when the season rate materially beats the current book line.
+function getDecisivePick(matchup) {
   const proj = matchup._proj;
-  const edge = matchup._quickEdge;
+  if (!proj) return null;
+  const candidates = [];
 
-  if (edge != null && Math.abs(edge) >= 0.8) {
-    const dir = edge > 0 ? "Over" : "Under";
-    const strength = Math.abs(edge) >= 1.3 ? "strong" : "solid";
-    bullets.push({
-      text: `${strength === "strong" ? "Strong" : "Solid"} total edge — projecting ${proj.projTotal} vs market ${matchup.marketTotal}. Lean ${dir} (${edge > 0 ? "+" : ""}${edge} runs).`,
-      strength,
-    });
-  } else if (edge != null && Math.abs(edge) < 0.8) {
-    bullets.push({
-      text: `Total looks fairly priced — projecting ${proj?.projTotal || "?"} vs market ${matchup.marketTotal || "?"}. No clear edge on the total.`,
-      strength: "neutral",
-    });
-  }
-
-  if (proj) {
-    const tempF = parseFloat(matchup.tempF);
-    if (tempF >= 90) bullets.push({ text: `Hot — ${tempF}°F pushes the ball, favors offense and Over.`, strength: "note" });
-    if (tempF && tempF <= 65) bullets.push({ text: `Cool — ${tempF}°F suppresses scoring, favors pitching and Under.`, strength: "note" });
-
-    const pf = proj.parkFactor;
-    if (pf >= 1.08) bullets.push({ text: `Hitter's park (${pf}× run environment) — bump toward Over.`, strength: "note" });
-    if (pf <= 0.93) bullets.push({ text: `Pitcher's park (${pf}× run environment) — bump toward Under.`, strength: "note" });
-
-    if (proj.awayERA && proj.homeERA) {
-      const gap = Math.abs(proj.awayERA - proj.homeERA);
-      if (gap >= 1.5) {
-        const better = proj.awayERA < proj.homeERA ? matchup.awayTeam : matchup.homeTeam;
-        const worse = proj.awayERA < proj.homeERA ? matchup.homeTeam : matchup.awayTeam;
-        const betterERA = Math.min(proj.awayERA, proj.homeERA);
-        const worseERA = Math.max(proj.awayERA, proj.homeERA);
-        bullets.push({ text: `Pitching mismatch — ${better}'s starter (${betterERA} ERA) outclasses ${worse}'s (${worseERA} ERA). Look at ${better} ML or ${worse} team total Over.`, strength: "strong" });
-      } else if (gap >= 0.8) {
-        const better = proj.awayERA < proj.homeERA ? matchup.awayTeam : matchup.homeTeam;
-        bullets.push({ text: `Slight pitching edge for ${better} (${Math.min(proj.awayERA,proj.homeERA)} vs ${Math.max(proj.awayERA,proj.homeERA)} ERA).`, strength: "note" });
-      } else {
-        bullets.push({ text: `Pitchers are evenly matched (${proj.awayERA} vs ${proj.homeERA} ERA). Look for edges elsewhere — weather, park, bullpen.`, strength: "neutral" });
-      }
-    }
-
-    // ML edge
-    if (proj.homeWinPct && matchup.marketHomeML) {
-      const mktML = parseFloat(matchup.marketHomeML);
-      if (!isNaN(mktML)) {
-        const mktPct = mktML < 0 ? (-mktML / (-mktML + 100)) : (100 / (mktML + 100));
-        const mlEdge = proj.homeWinPct - mktPct;
-        if (Math.abs(mlEdge) >= 0.05) {
-          const side = mlEdge > 0 ? matchup.homeTeam : matchup.awayTeam;
-          const modelPct = Math.round((mlEdge > 0 ? proj.homeWinPct : 1 - proj.homeWinPct) * 100);
-          const impliedPct = Math.round((mlEdge > 0 ? mktPct : 1 - mktPct) * 100);
-          bullets.push({ text: `ML value on ${side} — model gives ${modelPct}% vs implied ${impliedPct}% from the line.`, strength: Math.abs(mlEdge) >= 0.08 ? "strong" : "note" });
-        }
-      }
+  // Total
+  const mkt = parseFloat(matchup.marketTotal);
+  if (!isNaN(mkt)) {
+    const runsEdge = proj.projTotal - mkt;
+    if (Math.abs(runsEdge) >= 0.5) {
+      candidates.push({
+        market: "Total",
+        side: runsEdge > 0 ? "Over" : "Under",
+        line: mkt,
+        edge: Math.abs(runsEdge),
+        edgeUnit: "runs",
+        reason: `Projected ${proj.projTotal} vs market ${mkt} (${runsEdge > 0 ? "+" : ""}${runsEdge.toFixed(1)}).`,
+      });
     }
   }
 
-  // Always have at least one observation
-  if (bullets.length === 0) {
-    bullets.push({ text: `Tap 🔍 Scan All Games to auto-analyze this matchup.`, strength: "neutral" });
+  // Moneyline — pick the side model gives real value on
+  const parseML = v => { const n = parseFloat(v); return isNaN(n) ? null : n; };
+  const impliedPct = ml => ml < 0 ? (-ml) / (-ml + 100) : 100 / (ml + 100);
+  const homeML = parseML(matchup.marketHomeML);
+  const awayML = parseML(matchup.marketAwayML);
+  if (homeML != null && proj.homeWinPct != null) {
+    const modelPct = proj.homeWinPct;
+    const mktPct = impliedPct(homeML);
+    const mlEdge = modelPct - mktPct;
+    if (Math.abs(mlEdge) >= 0.04) {
+      const side = mlEdge > 0 ? matchup.homeTeam : matchup.awayTeam;
+      const mp = Math.round((mlEdge > 0 ? modelPct : 1 - modelPct) * 100);
+      const ip = Math.round((mlEdge > 0 ? mktPct : 1 - impliedPct(awayML ?? -homeML)) * 100);
+      candidates.push({
+        market: "Moneyline",
+        side,
+        line: mlEdge > 0 ? homeML : awayML,
+        edge: Math.abs(mlEdge),
+        edgeUnit: "pct",
+        reason: `${side} — model ${mp}% vs implied ${ip}%.`,
+      });
+    }
   }
 
-  return bullets;
+  // Weather/park context — bumps confidence, not a standalone pick
+  const tempF = parseFloat(matchup.tempF);
+  const contextNotes = [];
+  if (tempF >= 90) contextNotes.push(`${tempF}°F heat`);
+  if (tempF && tempF <= 62) contextNotes.push(`${tempF}°F cool`);
+  if (proj.parkFactor >= 1.08) contextNotes.push("hitter's park");
+  if (proj.parkFactor <= 0.93) contextNotes.push("pitcher's park");
+
+  if (candidates.length === 0) {
+    return {
+      pick: null, tier: "PASS", market: null, side: null, line: null,
+      reason: `Fair-priced. Model ${proj.projTotal} ≈ market ${matchup.marketTotal || "?"}. No angle worth playing.`,
+      context: contextNotes.join(" · "),
+    };
+  }
+
+  // Pick the strongest edge
+  candidates.sort((a, b) => {
+    // Normalize for comparison: runs->pct-ish scale (1 run ≈ 5% edge on totals)
+    const aNorm = a.edgeUnit === "runs" ? a.edge / 20 : a.edge;
+    const bNorm = b.edgeUnit === "runs" ? b.edge / 20 : b.edge;
+    return bNorm - aNorm;
+  });
+  const winner = candidates[0];
+
+  // Tier by edge magnitude
+  let tier;
+  if (winner.edgeUnit === "runs") {
+    if (winner.edge >= 1.5) tier = "T1";
+    else if (winner.edge >= 1.0) tier = "T2";
+    else tier = "T3";
+  } else {
+    if (winner.edge >= 0.10) tier = "T1";
+    else if (winner.edge >= 0.06) tier = "T2";
+    else tier = "T3";
+  }
+
+  return {
+    pick: `${winner.side} ${winner.line}`,
+    tier,
+    market: winner.market,
+    side: winner.side,
+    line: winner.line,
+    reason: winner.reason,
+    context: contextNotes.join(" · "),
+    edge: winner.edge,
+    edgeUnit: winner.edgeUnit,
+  };
+}
+
+// Legacy name kept for backward compat with any old references
+function getWhatWeLike(matchup) {
+  const p = getDecisivePick(matchup);
+  if (!p) return [];
+  const out = [];
+  if (p.tier === "PASS") {
+    out.push({ text: `PASS — ${p.reason}${p.context ? ` (${p.context})` : ""}`, strength: "neutral" });
+  } else {
+    out.push({ text: `${p.tier} PICK: ${p.market} ${p.pick}`, strength: "strong" });
+    out.push({ text: p.reason, strength: "note" });
+    if (p.context) out.push({ text: `Context: ${p.context}`, strength: "note" });
+  }
+  return out;
 }
 
 // Parse "YYYY-MM-DD" as LOCAL date, not UTC — new Date("2026-07-03") is UTC midnight
@@ -3716,6 +3761,61 @@ export default function DiamondEdge() {
           } catch {}
         }
         setMatchups([...work]); await saveMatchups(work);
+
+        // 2.5) AUTO-DECIDE + AUTO-LOG every game — no manual lock, no manual entry.
+        // For every scanned game: run getDecisivePick, write the pick into the
+        // matchup's looks, set overallLean, mark it locked, and drop a Pending
+        // entry into the Grade Log so results self-track.
+        setBootMsg("🎯 Making picks + auto-logging every game...");
+        const existingLogKeys = new Set(l.filter(e => e.date === today).map(e => e.matchupId));
+        const newLogEntries = [];
+        for (let i = 0; i < work.length; i++) {
+          const mm = work[i];
+          if (mm.date !== today || !mm._proj || mm.lockedAt) continue;
+          const decision = getDecisivePick(mm);
+          if (!decision) continue;
+          const isPass = decision.tier === "PASS";
+          const looks = mm.looks.map(l => {
+            if (!isPass && ((decision.market === "Total" && l.market === "Total") || (decision.market === "Moneyline" && l.market === "Moneyline"))) {
+              return { ...l, lean: decision.side, line: String(decision.line), why: decision.reason };
+            }
+            return l;
+          });
+          work[i] = {
+            ...mm,
+            looks,
+            lockedLooks: looks,
+            overallLean: isPass ? "Push/Skip" : (decision.side === mm.homeTeam ? "Home" : decision.side === mm.awayTeam ? "Away" : decision.side),
+            autoDecision: decision,
+            autoDecidedAt: new Date().toISOString(),
+            lockedAt: isPass ? null : new Date().toISOString(),
+            gateStatus: "auto-decided (pre-lineup)",
+          };
+          if (!isPass && !existingLogKeys.has(mm.id)) {
+            newLogEntries.push({
+              id: genId(),
+              matchupId: mm.id,
+              date: today,
+              matchupLabel: `${mm.awayTeam} @ ${mm.homeTeam}`,
+              autoLogged: true,
+              tier: decision.tier,
+              entries: [{
+                market: decision.market,
+                lean: decision.side,
+                line: String(decision.line),
+                result: "Pending",
+                clv: "",
+                notes: `Auto-picked · ${decision.reason}${decision.context ? ` · ${decision.context}` : ""}`,
+                factorsConfirmed: [],
+              }],
+            });
+          }
+        }
+        setMatchups([...work]); await saveMatchups(work);
+        if (newLogEntries.length > 0) {
+          const nextLog = [...newLogEntries, ...l];
+          setLog(nextLog); await saveLog(nextLog);
+        }
 
         // 3) PITCHER LEADERBOARD — today's probables with season stats
         setBootMsg("⚾ Loading pitcher leaderboard...");

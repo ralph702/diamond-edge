@@ -615,12 +615,17 @@ function getWhatWeLike(matchup) {
       text: `${strength === "strong" ? "Strong" : "Solid"} total edge — projecting ${proj.projTotal} vs market ${matchup.marketTotal}. Lean ${dir} (${edge > 0 ? "+" : ""}${edge} runs).`,
       strength,
     });
+  } else if (edge != null && Math.abs(edge) < 0.8) {
+    bullets.push({
+      text: `Total looks fairly priced — projecting ${proj?.projTotal || "?"} vs market ${matchup.marketTotal || "?"}. No clear edge on the total.`,
+      strength: "neutral",
+    });
   }
 
   if (proj) {
     const tempF = parseFloat(matchup.tempF);
-    if (tempF >= 90) bullets.push({ text: `Hot — ${tempF}°F pushes the ball, favors offense.`, strength: "note" });
-    if (tempF && tempF <= 65) bullets.push({ text: `Cool — ${tempF}°F suppresses scoring, favors pitching.`, strength: "note" });
+    if (tempF >= 90) bullets.push({ text: `Hot — ${tempF}°F pushes the ball, favors offense and Over.`, strength: "note" });
+    if (tempF && tempF <= 65) bullets.push({ text: `Cool — ${tempF}°F suppresses scoring, favors pitching and Under.`, strength: "note" });
 
     const pf = proj.parkFactor;
     if (pf >= 1.08) bullets.push({ text: `Hitter's park (${pf}× run environment) — bump toward Over.`, strength: "note" });
@@ -631,9 +636,36 @@ function getWhatWeLike(matchup) {
       if (gap >= 1.5) {
         const better = proj.awayERA < proj.homeERA ? matchup.awayTeam : matchup.homeTeam;
         const worse = proj.awayERA < proj.homeERA ? matchup.homeTeam : matchup.awayTeam;
-        bullets.push({ text: `Pitching mismatch — ${better}'s starter (${Math.min(proj.awayERA,proj.homeERA)} ERA) clearly outclasses ${worse}'s (${Math.max(proj.awayERA,proj.homeERA)} ERA). Check that team's total/props.`, strength: "note" });
+        const betterERA = Math.min(proj.awayERA, proj.homeERA);
+        const worseERA = Math.max(proj.awayERA, proj.homeERA);
+        bullets.push({ text: `Pitching mismatch — ${better}'s starter (${betterERA} ERA) outclasses ${worse}'s (${worseERA} ERA). Look at ${better} ML or ${worse} team total Over.`, strength: "strong" });
+      } else if (gap >= 0.8) {
+        const better = proj.awayERA < proj.homeERA ? matchup.awayTeam : matchup.homeTeam;
+        bullets.push({ text: `Slight pitching edge for ${better} (${Math.min(proj.awayERA,proj.homeERA)} vs ${Math.max(proj.awayERA,proj.homeERA)} ERA).`, strength: "note" });
+      } else {
+        bullets.push({ text: `Pitchers are evenly matched (${proj.awayERA} vs ${proj.homeERA} ERA). Look for edges elsewhere — weather, park, bullpen.`, strength: "neutral" });
       }
     }
+
+    // ML edge
+    if (proj.homeWinPct && matchup.marketHomeML) {
+      const mktML = parseFloat(matchup.marketHomeML);
+      if (!isNaN(mktML)) {
+        const mktPct = mktML < 0 ? (-mktML / (-mktML + 100)) : (100 / (mktML + 100));
+        const mlEdge = proj.homeWinPct - mktPct;
+        if (Math.abs(mlEdge) >= 0.05) {
+          const side = mlEdge > 0 ? matchup.homeTeam : matchup.awayTeam;
+          const modelPct = Math.round((mlEdge > 0 ? proj.homeWinPct : 1 - proj.homeWinPct) * 100);
+          const impliedPct = Math.round((mlEdge > 0 ? mktPct : 1 - mktPct) * 100);
+          bullets.push({ text: `ML value on ${side} — model gives ${modelPct}% vs implied ${impliedPct}% from the line.`, strength: Math.abs(mlEdge) >= 0.08 ? "strong" : "note" });
+        }
+      }
+    }
+  }
+
+  // Always have at least one observation
+  if (bullets.length === 0) {
+    bullets.push({ text: `Tap 🔍 Scan All Games to auto-analyze this matchup.`, strength: "neutral" });
   }
 
   return bullets;
@@ -3614,11 +3646,182 @@ export default function DiamondEdge() {
   const [batters, setBatters] = useState([]);
   const [loading, setLoading] = useState(true);
 
+  const [bootMsg, setBootMsg] = useState(null);
+
   useEffect(() => {
     (async () => {
       const [m, l, s, p, b] = await Promise.all([loadMatchups(), loadLog(), loadSeries(), loadPitchers(), loadBatters()]);
       setMatchups(m); setLog(l); setSeries(s); setPitchers(p); setBatters(b);
       setLoading(false);
+
+      // ── AUTO-BOOTSTRAP: fill every tab automatically, once per day, shared via
+      // Supabase so the first person to open the app loads it for everyone. ──
+      try {
+        const today = mlbApi.todayET();
+        let meta = null;
+        try { const r = await storage.get("de_autoload_meta"); meta = r ? JSON.parse(r.value) : null; } catch {}
+        const todayGames = m.filter(x => x.date === today);
+        if (meta?.date === today && todayGames.length > 0) { return; } // already done today
+
+        // 1) SLATE + YAHOO ODDS
+        setBootMsg("⚡ Auto-loading today's games + live odds...");
+        let work = [...m];
+        const games = await mlbApi.schedule(today);
+        let yahooGames = [];
+        try { const yr = await fetch("/api/yahoo-odds"); yahooGames = (await yr.json()).games || []; } catch {}
+        const yBy = Object.fromEntries(yahooGames.map(g => [`${g.awayTeam}@${g.homeTeam}`, g]));
+        const havePk = new Set(work.map(x => x.gamePk).filter(Boolean));
+        for (const g of games) {
+          if (havePk.has(g.gamePk)) continue;
+          const gameTime = new Date(g.gameTimeUTC).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", timeZone: "America/New_York" }) + " ET";
+          const y = yBy[`${g.away.abbr}@${g.home.abbr}`];
+          let marketTotal = "", marketHomeML = "", marketAwayML = "", tempF = "";
+          if (y) {
+            marketTotal = String(y.total); tempF = String(y.tempF);
+            const favML = parseInt(y.favoriteML, 10);
+            const impliedFavPct = favML < 0 ? (-favML) / (-favML + 100) : 100 / (favML + 100);
+            const dogPct = 1 - impliedFavPct;
+            const dogML = dogPct >= 0.5 ? Math.round(-(dogPct/(1-dogPct))*100) : Math.round(((1-dogPct)/dogPct)*100);
+            if (y.favorite === g.home.abbr) { marketHomeML = String(favML); marketAwayML = String(dogML); }
+            else { marketAwayML = String(favML); marketHomeML = String(dogML); }
+          }
+          work.unshift({
+            id: genId(), gamePk: g.gamePk, date: today,
+            homeTeam: g.home.abbr, awayTeam: g.away.abbr,
+            homeTeamId: g.home.id, awayTeamId: g.away.id,
+            homePitcher: g.home.probable || "TBD", awayPitcher: g.away.probable || "TBD",
+            homeProbableId: g.home.probableId || null, awayProbableId: g.away.probableId || null,
+            listedHomeProbable: g.home.probable, listedAwayProbable: g.away.probable,
+            gameTime, overallLean: "Push/Skip",
+            marketTotal, marketHomeML, marketAwayML, tempF,
+            factors: Object.fromEntries(FACTORS.map(f => [f.id, { direction: "Push/Skip", value: "", note: "" }])),
+            looks: MARKETS.map(market => ({ market, lean: "", line: "", why: "" })),
+            notes: "", autoLoaded: true,
+          });
+        }
+        setMatchups([...work]); await saveMatchups(work);
+
+        // 2) SCAN EVERY GAME — projections + edges, no button needed
+        setBootMsg("🔍 Scanning every game for edges...");
+        for (let i = 0; i < work.length; i++) {
+          const mm = work[i];
+          if (mm.date !== today || !mm.awayTeamId || mm._proj) continue;
+          try {
+            const proj = await mlbProjection.project(mm);
+            if (proj) {
+              const mkt = parseFloat(mm.marketTotal);
+              const qe = !isNaN(mkt) ? parseFloat((proj.projTotal - mkt).toFixed(1)) : null;
+              work[i] = { ...mm, _proj: proj, _quickEdge: qe };
+            }
+          } catch {}
+        }
+        setMatchups([...work]); await saveMatchups(work);
+
+        // 3) PITCHER LEADERBOARD — today's probables with season stats
+        setBootMsg("⚾ Loading pitcher leaderboard...");
+        const pHave = new Set(p.map(x => x.name));
+        let pWork = [...p];
+        for (const g of games) {
+          for (const side of ["away", "home"]) {
+            const t = g[side];
+            const opp = side === "away" ? g.home.abbr : g.away.abbr;
+            if (!t.probable || !t.probableId || pHave.has(t.probable)) continue;
+            try {
+              const st = await mlbProjection.pitcherStats(t.probableId);
+              pWork.unshift({
+                id: genId(), name: t.probable, team: t.abbr, hand: "R",
+                era: st?.era ?? "", fip: "", xfip: "", kPct: "", bbPct: "",
+                whip: st?.whip ?? "", swStr: "", kPer9: st?.kPer9 ?? "",
+                innings: st?.inningsPitched ?? "", shutouts: 0, last3Qs: 0,
+                lastStart: "", restDays: 5, nextOpp: opp, nextOppTier: "avg",
+                notes: st?.last5ERA ? `L5 ERA ${st.last5ERA} (n=${st.last5n}) · auto` : "auto",
+              });
+              pHave.add(t.probable);
+            } catch {}
+          }
+        }
+        setPitchers(pWork); await savePitchers(pWork);
+
+        // 4) BATTER LEADERBOARD — top hitters from every team playing today
+        setBootMsg("🏏 Loading batter leaderboard...");
+        const bHave = new Set(b.map(x => x.name));
+        let bWork = [...b];
+        const teamIds = [...new Set(games.flatMap(g => [g.home.id, g.away.id]))];
+        const abbrById = Object.fromEntries(games.flatMap(g => [[g.home.id, g.home.abbr], [g.away.id, g.away.abbr]]));
+        for (const teamId of teamIds) {
+          try {
+            const r = await fetch(`https://statsapi.mlb.com/api/v1/teams/${teamId}/leaders?leaderCategories=battingAverage,homeRuns&season=2026&leaderGameTypes=R&limit=2`);
+            if (!r.ok) continue;
+            const j = await r.json();
+            for (const cat of (j.teamLeaders || [])) {
+              for (const leader of (cat.leaders || []).slice(0, 2)) {
+                const name = leader.person?.fullName;
+                if (!name || bHave.has(name)) continue;
+                const sr = await fetch(`https://statsapi.mlb.com/api/v1/people/${leader.person.id}/stats?stats=season&group=hitting&season=2026`);
+                const sj = await sr.json();
+                const stat = sj.stats?.[0]?.splits?.[0]?.stat;
+                if (!stat) continue;
+                const abbr = abbrById[teamId] || "";
+                bWork.unshift({
+                  id: genId(), name, team: abbr,
+                  games: parseInt(stat.gamesPlayed) || 0,
+                  hits: parseInt(stat.hits) || 0,
+                  hr: parseInt(stat.homeRuns) || 0,
+                  avg: parseFloat(stat.avg) || 0,
+                  obp: parseFloat(stat.obp) || 0,
+                  slg: parseFloat(stat.slg) || 0,
+                  iso: (parseFloat(stat.slg) || 0) - (parseFloat(stat.avg) || 0),
+                  parkFactor: PARK_FACTORS[abbr] || 1.00,
+                  hardHitPct: "", propType: "hits", propLine: "",
+                  notes: "auto",
+                });
+                bHave.add(name);
+              }
+            }
+          } catch {}
+        }
+        setBatters(bWork); await saveBatters(bWork);
+
+        // 5) ACTIVE SERIES — detect from 3-day schedule lookback
+        setBootMsg("📊 Detecting active series...");
+        try {
+          const dayMs = 86400000;
+          const dstr = (offset) => new Date(new Date(today).getTime() - offset * dayMs).toISOString().split("T")[0];
+          const [d1, d2, d3] = await Promise.all([mlbApi.schedule(dstr(1)), mlbApi.schedule(dstr(2)), mlbApi.schedule(dstr(3))]);
+          const priorFinals = [...d1, ...d2, ...d3].filter(g => g.status === "Final");
+          const sHave = new Set(s.map(x => `${x.awayTeam}@${x.homeTeam}`));
+          let sWork = [...s];
+          for (const g of games) {
+            const key = `${g.away.abbr}@${g.home.abbr}`;
+            if (sHave.has(key)) continue;
+            const prior = priorFinals.filter(pg =>
+              (pg.away.abbr === g.away.abbr && pg.home.abbr === g.home.abbr) ||
+              (pg.away.abbr === g.home.abbr && pg.home.abbr === g.away.abbr));
+            if (prior.length === 0) continue;
+            let hw = 0, aw = 0;
+            for (const pg of prior) {
+              const hr2 = pg.home.score || 0, ar2 = pg.away.score || 0;
+              if (pg.home.abbr === g.home.abbr) { if (hr2 > ar2) hw++; else aw++; }
+              else { if (hr2 > ar2) aw++; else hw++; }
+            }
+            sWork.unshift({
+              id: genId(), homeTeam: g.home.abbr, awayTeam: g.away.abbr,
+              homeScore: hw, awayScore: aw,
+              seriesLen: prior.length >= 3 ? 4 : 3,
+              homeWinPct: 0.500, awayWinPct: 0.500,
+              startDate: today, notes: `Auto · ${prior.length} prior game${prior.length > 1 ? "s" : ""}`,
+            });
+            sHave.add(key);
+          }
+          setSeries(sWork); await saveSeries(sWork);
+        } catch {}
+
+        await storage.set("de_autoload_meta", JSON.stringify({ date: today, complete: true, at: new Date().toISOString() }));
+        setBootMsg("✓ Everything loaded — slate, odds, edges, pitchers, batters, series");
+        setTimeout(() => setBootMsg(null), 8000);
+      } catch (e) {
+        setBootMsg("⚠ Auto-load hit a snag: " + e.message);
+      }
     })();
   }, []);
 
@@ -3661,6 +3864,11 @@ export default function DiamondEdge() {
             {matchups.length} games · {log.flatMap(l => l.entries).filter(e => e.result !== "Pending").length} graded
           </div>
         </div>
+        {bootMsg && (
+          <div style={{ padding:"8px 20px", background: bootMsg.startsWith("⚠") ? "#e85d6a15" : "#3ecf6a12", borderBottom:`1px solid ${bootMsg.startsWith("⚠") ? "#e85d6a40" : "#3ecf6a30"}`, fontSize:12, fontFamily:T.mono, color: bootMsg.startsWith("⚠") ? "#e85d6a" : "#3ecf6a" }}>
+            {bootMsg}
+          </div>
+        )}
         <div className="de-tabs">
           {TABS.map((t, i) => (
             <button key={i} className={`de-tab ${tab === i ? "active" : ""}`} onClick={() => setTab(i)}>{t}</button>

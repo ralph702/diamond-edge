@@ -3244,9 +3244,16 @@ function TabBatters({ batters, onAdd, onUpdate, onDelete, matchups }) {
                   {(b.avg || 0).toFixed(3)} AVG · {hitsPerG} H/G · {hrPerG} HR/G · {b.games || 0} G
                 </div>
               </div>
-              <span style={{ fontFamily:T.mono, fontSize:11, fontWeight:700, padding:"3px 9px", borderRadius:20, color:heat.color, border:`1px solid ${heat.color}40` }}>
-                {heat.label} {score}
-              </span>
+              <div style={{ display:"flex", gap:6, alignItems:"center", flexWrap:"wrap" }}>
+                {b.games > 0 && (b.hits / b.games) >= 1.25 && (
+                  <span style={{ fontFamily:T.mono, fontSize:10, fontWeight:700, padding:"3px 8px", borderRadius:20, color:"#3ecf6a", border:"1px solid #3ecf6a50", background:"#3ecf6a12" }}>
+                    ✓ 2+ HIT DAY
+                  </span>
+                )}
+                <span style={{ fontFamily:T.mono, fontSize:11, fontWeight:700, padding:"3px 9px", borderRadius:20, color:heat.color, border:`1px solid ${heat.color}40` }}>
+                  {heat.label} {score}
+                </span>
+              </div>
             </div>
             <div style={{ display:"flex", gap:8, marginTop:10, flexWrap:"wrap", alignItems:"flex-end" }}>
               <div>
@@ -3446,6 +3453,11 @@ function PitcherCard({ p, onEdit, onDelete }) {
           </div>
         </div>
         <div style={{ textAlign:"right" }}>
+          {parseFloat(p.kPer9) >= 8.0 && (
+            <div style={{ fontFamily:T.mono, fontSize:10, fontWeight:700, padding:"3px 8px", borderRadius:20, color:"#3ecf6a", border:"1px solid #3ecf6a50", background:"#3ecf6a12", display:"inline-block", marginBottom:4 }}>
+              ✓ 5+ K DAY
+            </div>
+          )}
           <div style={{ fontSize:12, fontWeight:700, color:heat.color, fontFamily:T.mono }}>{heat.label}</div>
           <div style={{ fontSize:10, color:T.text2, fontFamily:T.mono, marginTop:2 }}>Score {score}/10</div>
         </div>

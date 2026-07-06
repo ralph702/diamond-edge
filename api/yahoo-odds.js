@@ -15,8 +15,8 @@ const TEAM_NAME_TO_ABBR = {
 };
 
 function normalizeAbbr(raw) {
-  // Yahoo sometimes uses ATH for Athletics; our app's TEAM_IDS uses OAK.
   if (raw === "ATH") return "OAK";
+  if (raw === "WAS") return "WSH"; // statsapi uses WSH; Yahoo uses WAS
   return raw;
 }
 

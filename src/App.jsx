@@ -474,7 +474,7 @@ const mlbProjection = {
       );
       if (!r.ok) return null;
       const j = await r.json();
-      const season = j.stats?.find(s => s.type?.displayName === "statsSingleSeason")?.splits?.[0]?.stat;
+      const season = j.stats?.find(s => s.type?.displayName === "season")?.splits?.[0]?.stat;
       const gameLogs = j.stats?.find(s => s.type?.displayName === "gameLog")?.splits || [];
       const last5 = gameLogs.slice(0, 5).map(g => g.stat);
       const l5ERA = last5.length
@@ -573,6 +573,7 @@ const mlbProjection = {
     const projAwayML = mlbProjection.winPctToAmerican(1 - homeWinPct);
 
     return {
+      _v: 2, // projection version — bump forces bootstrap re-scan after engine fixes
       projTotal, projHomeRuns, projAwayRuns,
       projHomeML, projAwayML, homeWinPct: parseFloat(homeWinPct.toFixed(3)),
       parkFactor, tempAdj: parseFloat(tempAdj.toFixed(3)),
@@ -660,9 +661,23 @@ function getDecisivePick(matchup) {
   if (proj.parkFactor <= 0.93) contextNotes.push("pitcher's park");
 
   if (candidates.length === 0) {
+    // No market lines posted yet? Still make a call if the model has real conviction.
+    const noMarket = isNaN(mkt) && homeML == null;
+    if (noMarket && proj.homeWinPct != null && (proj.homeWinPct >= 0.58 || proj.homeWinPct <= 0.42)) {
+      const side = proj.homeWinPct >= 0.58 ? matchup.homeTeam : matchup.awayTeam;
+      const mp = Math.round((proj.homeWinPct >= 0.58 ? proj.homeWinPct : 1 - proj.homeWinPct) * 100);
+      return {
+        pick: `${side} ML`, tier: "T3", market: "Moneyline", side, line: "ML",
+        reason: `Model-only: ${side} ${mp}% to win. No market line posted yet — re-check price before treating as final.`,
+        context: contextNotes.join(" · "),
+        edge: Math.abs(proj.homeWinPct - 0.5), edgeUnit: "pct",
+      };
+    }
     return {
       pick: null, tier: "PASS", market: null, side: null, line: null,
-      reason: `Fair-priced. Model ${proj.projTotal} ≈ market ${matchup.marketTotal || "?"}. No angle worth playing.`,
+      reason: noMarket
+        ? `No market line posted yet and model has no strong side (${proj.homeWinPct ? Math.round(proj.homeWinPct*100) : "?"}% home). Re-scan after odds post.`
+        : `Fair-priced. Model ${proj.projTotal} ≈ market ${matchup.marketTotal || "?"}. No angle worth playing.`,
       context: contextNotes.join(" · "),
     };
   }
@@ -1193,7 +1208,9 @@ function MatchupCard({ matchup, onLog, onDelete, onUpdate }) {
     3:{label:"T3 · LEAN",color:T.text1,bg:T.bg3},
     4:{label:"T4 · PASS",color:T.red,bg:`${T.red}10`},
   };
-  const tierStyle = TIER_STYLES[tier] || TIER_STYLES[4];
+  const AD_TIER = { T1: 1, T2: 2, T3: 3, PASS: 4 };
+  const effTier = matchup.autoDecision ? (AD_TIER[matchup.autoDecision.tier] ?? tier) : tier;
+  const tierStyle = TIER_STYLES[effTier] || TIER_STYLES[4];
 
   const [lockChecking, setLockChecking] = useState(false);
   const [gateMsg, setGateMsg] = useState(null);
@@ -1419,6 +1436,13 @@ Do not pad. Do not re-explain the original reasoning unless it's directly releva
                 PICK: {matchup.overallLean === "Home" ? matchup.homeTeam : matchup.overallLean === "Away" ? matchup.awayTeam : matchup.overallLean}
               </span>
               <span style={{ fontSize:11, color:T.text2, fontFamily:T.mono }}>· {tierStyle.label}</span>
+            </div>
+          );
+        }
+        if (matchup.autoDecision?.tier === "PASS") {
+          return (
+            <div style={{ fontSize:11, color:T.text2, fontFamily:T.mono, margin:"10px 0", padding:"8px 12px", background:T.bg2, borderRadius:8, border:`1px solid ${T.border}` }}>
+              ⊘ PASS — {matchup.autoDecision.reason}
             </div>
           );
         }
@@ -2183,7 +2207,9 @@ function TabTop10({ matchups }) {
       3:{label:"T3 · LEAN",color:T.text1,bg:T.bg3},
       4:{label:"T4 · PASS",color:T.red,bg:`${T.red}10`},
     };
-    const ts = TIER_STYLES[tier] || TIER_STYLES[4];
+    const AD_TIER = { T1: 1, T2: 2, T3: 3, PASS: 4 };
+    const effTier = m.autoDecision ? (AD_TIER[m.autoDecision.tier] ?? tier) : tier;
+    const ts = TIER_STYLES[effTier] || TIER_STYLES[4];
     const picks = (m.lockedLooks || m.looks || []).filter(l => l.lean);
     return (
       <div className="de-card" style={{ borderColor: m.lockedAt ? T.green : T.border, borderWidth: m.lockedAt ? 2 : 1 }}>
@@ -3727,6 +3753,21 @@ export default function DiamondEdge() {
         let yahooGames = [];
         try { const yr = await fetch("/api/yahoo-odds"); yahooGames = (await yr.json()).games || []; } catch {}
         const yBy = Object.fromEntries(yahooGames.map(g => [`${g.awayTeam}@${g.homeTeam}`, g]));
+        // Backfill market lines on already-loaded today games that were missing them
+        // (happens when bootstrap ran before Yahoo posted the day's odds)
+        for (let i = 0; i < work.length; i++) {
+          const mm = work[i];
+          if (mm.date !== today || mm.marketTotal) continue;
+          const y = yBy[`${mm.awayTeam}@${mm.homeTeam}`];
+          if (!y) continue;
+          const favML = parseInt(y.favoriteML, 10);
+          const impliedFavPct = favML < 0 ? (-favML) / (-favML + 100) : 100 / (favML + 100);
+          const dogPct = 1 - impliedFavPct;
+          const dogML = dogPct >= 0.5 ? Math.round(-(dogPct/(1-dogPct))*100) : Math.round(((1-dogPct)/dogPct)*100);
+          work[i] = { ...mm, marketTotal: String(y.total), tempF: String(y.tempF),
+            marketHomeML: y.favorite === mm.homeTeam ? String(favML) : String(dogML),
+            marketAwayML: y.favorite === mm.homeTeam ? String(dogML) : String(favML) };
+        }
         const havePk = new Set(work.map(x => x.gamePk).filter(Boolean));
         for (const g of games) {
           if (havePk.has(g.gamePk)) continue;
@@ -3762,7 +3803,7 @@ export default function DiamondEdge() {
         setBootMsg("🔍 Scanning every game for edges...");
         for (let i = 0; i < work.length; i++) {
           const mm = work[i];
-          if (mm.date !== today || !mm.awayTeamId || mm._proj) continue;
+          if (mm.date !== today || !mm.awayTeamId || mm._proj?._v === 2) continue;
           try {
             const proj = await mlbProjection.project(mm);
             if (proj) {
